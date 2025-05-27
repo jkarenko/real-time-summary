@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const readline = require('readline');
 const Anthropic = require('@anthropic-ai/sdk');
 
 class TranscriptSummarizer {
@@ -27,6 +28,7 @@ class TranscriptSummarizer {
         this.anthropic = new Anthropic({
             apiKey: process.env.ANTHROPIC_API_KEY,
         });
+        this.rl = null;
     }
 
     getSummaryFilePath(transcriptPath) {
@@ -123,8 +125,11 @@ class TranscriptSummarizer {
     async processControlInstruction(instruction) {
         if (!this.currentSummary) {
             console.log('⚠️  No existing summary to modify with control instruction');
+            console.log('🔍 Current summary length:', this.currentSummary?.length || 0);
             return;
         }
+        
+        console.log('🔍 DEBUG: Processing control instruction with existing summary length:', this.currentSummary.length);
 
         const prompt = `You are managing a real-time meeting summary. You have received a control instruction to modify the current summary.
 
@@ -135,19 +140,21 @@ CONTROL INSTRUCTION:
 ${instruction}
 
 INSTRUCTIONS:
-- Apply the requested modification to the summary
-- Make only the changes requested in the control instruction
-- Maintain the existing structure unless specifically asked to change it
-- If the instruction asks to restructure, reorganize, or emphasize certain content, do so accordingly
-- If the instruction corrects terminology or concepts, update accordingly
-- Return the complete modified summary
+- MUST apply the requested modification to the summary
+- If asked to add a section, ADD IT - do not ignore the request
+- If asked to change terminology, CHANGE IT throughout the document
+- If asked to restructure, DO IT completely
+- Return the COMPLETE modified summary with all requested changes implemented
+- Do NOT return the summary unchanged - you MUST make the requested modifications
+
+IMPORTANT: The user expects to see changes. If you don't make changes, they will think the system is broken.
 
 Modified summary:`;
 
         try {
             const message = await this.anthropic.messages.create({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 2000,
+                max_tokens: 4000,
                 messages: [{
                     role: 'user',
                     content: prompt
@@ -161,17 +168,41 @@ Modified summary:`;
             this.currentSummary = message.content[0].text;
             this.saveSummary();
             
-            this.displayCostReport(requestCost, inputTokens, outputTokens);
-            
-            console.log('\n🎛️  Summary modified by control instruction');
-            console.log('='.repeat(50));
+            console.log('\n🎛️  CONTROL INSTRUCTION APPLIED - SUMMARY UPDATED');
+            console.log('═'.repeat(60));
+            console.log('🔍 DEBUG: Updated summary length:', this.currentSummary.length);
+            console.log('🔍 DEBUG: First 200 chars:', this.currentSummary.substring(0, 200));
             console.log(this.currentSummary);
-            console.log('='.repeat(50));
+            console.log('═'.repeat(60));
             console.log(`💾 Updated summary saved to: ${this.summaryFilePath}`);
+            
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
 
         } catch (error) {
             console.error('Error processing control instruction:', error.message);
         }
+    }
+
+    setupTextControlChannel() {
+        this.rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            prompt: ''
+        });
+
+        this.rl.on('line', async (input) => {
+            const instruction = input.trim();
+            if (instruction) {
+                console.log(`\n⌨️  PROCESSING TEXT CONTROL: "${instruction}"`);
+                console.log('⏳ Applying instruction to summary...\n');
+                await this.processControlInstruction(instruction);
+                console.log('\n💬 Ready for next instruction (or continue with meeting)');
+            }
+        });
+
+        // Initially hide the prompt until first instruction is needed
+        console.log('\n💬 Text Control Channel: Type instructions and press Enter');
+        console.log('   Example: "Split the payment section into two separate topics"');
     }
 
     async start() {
@@ -188,13 +219,16 @@ Modified summary:`;
         this.lastPosition = fs.statSync(this.filePath).size;
         console.log(`Starting from position: ${this.lastPosition}`);
 
+        // Setup text control channel
+        this.setupTextControlChannel();
+
         fs.watchFile(this.filePath, { interval: 1000 }, async (curr, prev) => {
             if (curr.mtime > prev.mtime) {
                 await this.processNewContent();
             }
         });
 
-        console.log('Press Ctrl+C to stop monitoring...');
+        console.log('\nPress Ctrl+C to stop monitoring...');
     }
 
     async processNewContent() {
@@ -279,7 +313,7 @@ Please create an initial summary that captures the key points, topics discussed,
 
             const message = await this.anthropic.messages.create({
                 model: 'claude-sonnet-4-20250514',
-                max_tokens: 2000,
+                max_tokens: 4000,
                 messages: [{
                     role: 'user',
                     content: prompt
@@ -308,6 +342,11 @@ Please create an initial summary that captures the key points, topics discussed,
 
     async stop() {
         fs.unwatchFile(this.filePath);
+        
+        // Close readline interface
+        if (this.rl) {
+            this.rl.close();
+        }
         
         if (this.pendingContent.trim()) {
             console.log('\n🤖 Processing remaining content before stopping...');

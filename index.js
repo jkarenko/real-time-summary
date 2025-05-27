@@ -12,7 +12,7 @@ class TranscriptSummarizer {
         this.lastPosition = 0;
         this.currentSummary = '';
         this.pendingContent = '';
-        this.wordThreshold = 100;
+        this.wordThreshold = 200;
         this.startTime = Date.now();
         this.totalInputTokens = 0;
         this.totalOutputTokens = 0;

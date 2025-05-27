@@ -13,6 +13,15 @@ class TranscriptSummarizer {
         this.currentSummary = '';
         this.pendingContent = '';
         this.wordThreshold = 100;
+        this.startTime = Date.now();
+        this.totalInputTokens = 0;
+        this.totalOutputTokens = 0;
+        this.totalCost = 0;
+        this.requestCount = 0;
+        this.PRICING = {
+            input: 0.00003,  // $0.03 per 1K tokens for Claude 4 Sonnet
+            output: 0.00015  // $0.15 per 1K tokens for Claude 4 Sonnet
+        };
         this.anthropic = new Anthropic({
             apiKey: process.env.ANTHROPIC_API_KEY,
         });
@@ -35,6 +44,30 @@ class TranscriptSummarizer {
 
     saveSummary() {
         fs.writeFileSync(this.summaryFilePath, this.currentSummary, 'utf8');
+    }
+
+    calculateCost(inputTokens, outputTokens) {
+        const inputCost = (inputTokens / 1000) * this.PRICING.input;
+        const outputCost = (outputTokens / 1000) * this.PRICING.output;
+        return inputCost + outputCost;
+    }
+
+    displayCostReport(requestCost, inputTokens, outputTokens) {
+        this.totalInputTokens += inputTokens;
+        this.totalOutputTokens += outputTokens;
+        this.totalCost += requestCost;
+        this.requestCount += 1;
+
+        const runtimeHours = (Date.now() - this.startTime) / (1000 * 60 * 60);
+        const estimatedHourlyCost = runtimeHours > 0 ? this.totalCost / runtimeHours : 0;
+
+        console.log('\n💰 Cost Report:');
+        console.log('─'.repeat(50));
+        console.log(`📊 This request: ${inputTokens} in + ${outputTokens} out = $${requestCost.toFixed(4)}`);
+        console.log(`📈 Cumulative: ${this.totalInputTokens} in + ${this.totalOutputTokens} out = $${this.totalCost.toFixed(4)}`);
+        console.log(`⏱️  Runtime: ${(runtimeHours * 60).toFixed(1)} minutes | Requests: ${this.requestCount}`);
+        console.log(`💵 Estimated hourly cost: $${estimatedHourlyCost.toFixed(2)}/hour`);
+        console.log('─'.repeat(50));
     }
 
     async start() {
@@ -136,8 +169,14 @@ Please create an initial summary that captures the key points, topics discussed,
                 }]
             });
 
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+
             this.currentSummary = message.content[0].text;
             this.saveSummary();
+            
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
             
             console.log('\n📋 Updated Summary:');
             console.log('='.repeat(50));
@@ -163,6 +202,16 @@ Please create an initial summary that captures the key points, topics discussed,
             this.saveSummary();
             console.log(`\n💾 Final summary saved to: ${this.summaryFilePath}`);
         }
+        
+        const runtimeHours = (Date.now() - this.startTime) / (1000 * 60 * 60);
+        console.log('\n🏁 Final Cost Summary:');
+        console.log('═'.repeat(50));
+        console.log(`📊 Total tokens: ${this.totalInputTokens} in + ${this.totalOutputTokens} out`);
+        console.log(`💰 Total cost: $${this.totalCost.toFixed(4)}`);
+        console.log(`📞 API requests: ${this.requestCount}`);
+        console.log(`⏱️  Session duration: ${(runtimeHours * 60).toFixed(1)} minutes`);
+        console.log(`💵 Average cost per hour: $${(this.totalCost / runtimeHours).toFixed(2)}/hour`);
+        console.log('═'.repeat(50));
         console.log('\nStopped monitoring transcript file.');
     }
 }

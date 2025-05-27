@@ -13,6 +13,8 @@ class TranscriptSummarizer {
         this.currentSummary = '';
         this.pendingContent = '';
         this.wordThreshold = 200;
+        this.controlTrigger = 'Message to summary robot';
+        this.controlSpeaker = 'Juho';
         this.startTime = Date.now();
         this.totalInputTokens = 0;
         this.totalOutputTokens = 0;
@@ -70,9 +72,112 @@ class TranscriptSummarizer {
         console.log('─'.repeat(50));
     }
 
+    parseTranscriptLine(line) {
+        // Parse format: [00:42:55.55] Juho: Message content
+        const timestampMatch = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{2})\]\s*([^:]+):\s*(.+)$/);
+        if (timestampMatch) {
+            return {
+                timestamp: timestampMatch[1],
+                speaker: timestampMatch[2].trim(),
+                content: timestampMatch[3].trim()
+            };
+        }
+        return null;
+    }
+
+    extractControlInstructions(newContent) {
+        const lines = newContent.split('\n');
+        const controlInstructions = [];
+        const regularContent = [];
+
+        for (const line of lines) {
+            const parsed = this.parseTranscriptLine(line);
+            if (parsed && 
+                parsed.speaker === this.controlSpeaker && 
+                parsed.content.includes(this.controlTrigger)) {
+                
+                // Extract instruction after trigger phrase
+                const triggerIndex = parsed.content.indexOf(this.controlTrigger);
+                const instruction = parsed.content.substring(triggerIndex + this.controlTrigger.length).trim();
+                
+                if (instruction) {
+                    controlInstructions.push({
+                        timestamp: parsed.timestamp,
+                        instruction: instruction.replace(/^[.,!?]\s*/, '') // Remove leading punctuation
+                    });
+                    console.log(`🎛️  Control instruction detected: "${instruction}"`);
+                } else {
+                    console.log(`🎛️  Empty control instruction detected at ${parsed.timestamp}`);
+                }
+            } else {
+                regularContent.push(line);
+            }
+        }
+
+        return {
+            controlInstructions,
+            regularContent: regularContent.join('\n').trim()
+        };
+    }
+
+    async processControlInstruction(instruction) {
+        if (!this.currentSummary) {
+            console.log('⚠️  No existing summary to modify with control instruction');
+            return;
+        }
+
+        const prompt = `You are managing a real-time meeting summary. You have received a control instruction to modify the current summary.
+
+CURRENT SUMMARY:
+${this.currentSummary}
+
+CONTROL INSTRUCTION:
+${instruction}
+
+INSTRUCTIONS:
+- Apply the requested modification to the summary
+- Make only the changes requested in the control instruction
+- Maintain the existing structure unless specifically asked to change it
+- If the instruction asks to restructure, reorganize, or emphasize certain content, do so accordingly
+- If the instruction corrects terminology or concepts, update accordingly
+- Return the complete modified summary
+
+Modified summary:`;
+
+        try {
+            const message = await this.anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 2000,
+                messages: [{
+                    role: 'user',
+                    content: prompt
+                }]
+            });
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+
+            this.currentSummary = message.content[0].text;
+            this.saveSummary();
+            
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+            
+            console.log('\n🎛️  Summary modified by control instruction');
+            console.log('='.repeat(50));
+            console.log(this.currentSummary);
+            console.log('='.repeat(50));
+            console.log(`💾 Updated summary saved to: ${this.summaryFilePath}`);
+
+        } catch (error) {
+            console.error('Error processing control instruction:', error.message);
+        }
+    }
+
     async start() {
         console.log(`Monitoring transcript file: ${this.filePath}`);
         console.log(`Summary will be saved to: ${this.summaryFilePath}`);
+        console.log(`🎛️  Control channel: Say "${this.controlTrigger}" as "${this.controlSpeaker}" to send instructions`);
         
         if (!fs.existsSync(this.filePath)) {
             console.error(`File does not exist: ${this.filePath}`);
@@ -111,17 +216,29 @@ class TranscriptSummarizer {
                         console.log(`\n📝 New transcript content (${newContent.length} chars):`);
                         console.log(newContent.trim());
                         
-                        this.pendingContent += ' ' + newContent.trim();
-                        const wordCount = this.pendingContent.trim().split(/\s+/).length;
+                        // Extract control instructions and regular content
+                        const { controlInstructions, regularContent } = this.extractControlInstructions(newContent.trim());
                         
-                        console.log(`📊 Pending content: ${wordCount} words (threshold: ${this.wordThreshold})`);
+                        // Process control instructions immediately
+                        for (const controlInstruction of controlInstructions) {
+                            console.log(`\n🎛️  Processing control instruction at ${controlInstruction.timestamp}`);
+                            await this.processControlInstruction(controlInstruction.instruction);
+                        }
                         
-                        if (wordCount >= this.wordThreshold || !this.currentSummary) {
-                            console.log('\n🤖 Updating summary...');
-                            await this.updateSummary(this.pendingContent.trim());
-                            this.pendingContent = '';
-                        } else {
-                            console.log(`⏳ Waiting for more content (need ${this.wordThreshold - wordCount} more words)`);
+                        // Add regular content to pending buffer
+                        if (regularContent) {
+                            this.pendingContent += ' ' + regularContent;
+                            const wordCount = this.pendingContent.trim().split(/\s+/).length;
+                            
+                            console.log(`📊 Pending content: ${wordCount} words (threshold: ${this.wordThreshold})`);
+                            
+                            if (wordCount >= this.wordThreshold || !this.currentSummary) {
+                                console.log('\n🤖 Updating summary...');
+                                await this.updateSummary(this.pendingContent.trim());
+                                this.pendingContent = '';
+                            } else {
+                                console.log(`⏳ Waiting for more content (need ${this.wordThreshold - wordCount} more words)`);
+                            }
                         }
                         
                         this.lastPosition = stats.size;

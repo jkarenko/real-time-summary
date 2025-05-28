@@ -1222,11 +1222,30 @@ INSTRUCTIONS:
                     console.log('⏳ Generating note from transcript context...\n');
                     await this.createNote(noteRequest);
                     console.log('\n💬 Ready for next command (or continue with meeting)');
-                } else {
-                    // Treat as question about transcript
-                    console.log(`\n❓ ANSWERING QUESTION: "${rawInput}"`);
+                } else if (upperInput.startsWith('ASK ')) {
+                    const question = rawInput.substring(4); // Remove "ASK "
+                    console.log(`\n❓ ANSWERING QUESTION: "${question}"`);
                     console.log('⏳ Analyzing transcript for answer...\n');
-                    await this.answerQuestion(rawInput);
+                    await this.answerQuestion(question);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else {
+                    // Unknown command
+                    console.log(`\n❌ Unknown command: "${rawInput}"`);
+                    console.log('\n💬 Available commands:');
+                    console.log('   SUMMARIZE - Create/update summary from current transcript');
+                    console.log('   REGENERATE - Rebuild summary from entire transcript');
+                    console.log('   COMPACT - Compress transcript to reduce context size');
+                    console.log('   UNCOMPACT - Revert to using original uncompressed transcript');
+                    console.log('   READONLY - Toggle read-only mode on/off');
+                    console.log('   SCREENSHOTS - Show screenshot selection menu (paginated)');
+                    console.log('   SESSION - Show only screenshots from current session');
+                    console.log('   NEXT/PREV - Navigate screenshot pages');
+                    console.log('   SEARCH term - Filter screenshots by filename');
+                    console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
+                    console.log('   INSTRUCTION [text] - Modify summary');
+                    console.log('   NOTE [text] - Add AI-assisted note to notes file');
+                    console.log('   NOTE! [text] - Create note without screenshots (faster)');
+                    console.log('   ASK [question] - Ask question about transcript');
                     console.log('\n💬 Ready for next command (or continue with meeting)');
                 }
             }
@@ -1247,7 +1266,7 @@ INSTRUCTIONS:
         console.log('   INSTRUCTION [text] - Modify summary (e.g., "INSTRUCTION Split payment section")');
         console.log('   NOTE [text] - Add AI-assisted note to notes file');
         console.log('   NOTE! [text] - Create note without screenshots (faster)');
-        console.log('   [question] - Ask question about transcript (CLI response only)');
+        console.log('   ASK [question] - Ask question about transcript (CLI response only)');
     }
 
     async start() {

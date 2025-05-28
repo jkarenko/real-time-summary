@@ -41,6 +41,7 @@ class TranscriptSummarizer {
         this.selectedScreenshots = []; // User-selected screenshots for context
         this.screenshotPageSize = 20; // Screenshots per page
         this.currentScreenshotPage = 0; // Current page for screenshot menu
+        this.contextWordLimit = 0; // Word limit for ASK/NOTE commands (0 = no limit)
     }
 
     getSummaryFilePath(transcriptPath) {
@@ -314,6 +315,21 @@ class TranscriptSummarizer {
                 console.log('⚠️  Invalid page number format. Use: PAGE 3');
             }
         }
+    }
+
+    getLimitedTranscript(fullTranscript) {
+        if (this.contextWordLimit === 0) {
+            return fullTranscript; // No limit
+        }
+
+        const words = fullTranscript.trim().split(/\s+/);
+        if (words.length <= this.contextWordLimit) {
+            return fullTranscript; // Already within limit
+        }
+
+        // Take the last N words (tail)
+        const limitedWords = words.slice(-this.contextWordLimit);
+        return limitedWords.join(' ');
     }
 
     saveNote(note) {
@@ -904,12 +920,20 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
                 return;
             }
 
+            // Apply context limit if set
+            const limitedTranscript = this.getLimitedTranscript(fullTranscript);
+            
+            if (this.contextWordLimit > 0 && limitedTranscript !== fullTranscript) {
+                const limitedWords = limitedTranscript.trim().split(/\s+/).length;
+                console.log(`📊 Using last ${limitedWords} words of transcript (limit: ${this.contextWordLimit})`);
+            }
+
             const messages = [];
 
             let promptText = `You are an AI assistant helping create concise meeting notes for a SOFTWARE SOLUTION ARCHITECT. You have access to the meeting transcript and are asked to create a brief note about a specific topic.
 
 MEETING TRANSCRIPT:
-${fullTranscript}
+${limitedTranscript}
 
 NOTE REQUEST:
 ${noteRequest}
@@ -1040,12 +1064,20 @@ INSTRUCTIONS:
                 return;
             }
 
+            // Apply context limit if set
+            const limitedTranscript = this.getLimitedTranscript(fullTranscript);
+            
+            if (this.contextWordLimit > 0 && limitedTranscript !== fullTranscript) {
+                const limitedWords = limitedTranscript.trim().split(/\s+/).length;
+                console.log(`📊 Using last ${limitedWords} words of transcript (limit: ${this.contextWordLimit})`);
+            }
+
             const messages = [];
 
             let promptText = `You are an AI assistant helping a SOFTWARE SOLUTION ARCHITECT understand a meeting transcript. Answer the user's question based on the meeting content.
 
 MEETING TRANSCRIPT:
-${fullTranscript}
+${limitedTranscript}
 
 QUESTION:
 ${question}
@@ -1200,6 +1232,22 @@ INSTRUCTIONS:
                     this.currentScreenshotPage = 0;
                     this.displayScreenshotMenu(null, true);
                     console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput.startsWith('LIMIT ')) {
+                    const limitInput = rawInput.substring(6).trim(); // Remove "LIMIT "
+                    
+                    if (limitInput.toLowerCase() === 'off' || limitInput === '0') {
+                        this.contextWordLimit = 0;
+                        console.log('📊 Context limit disabled - using full transcript for ASK/NOTE commands');
+                    } else {
+                        const limit = parseInt(limitInput);
+                        if (isNaN(limit) || limit < 0) {
+                            console.log('⚠️  Invalid limit. Use: LIMIT 1000 or LIMIT OFF');
+                        } else {
+                            this.contextWordLimit = limit;
+                            console.log(`📊 Context limit set to ${limit} words for ASK/NOTE commands`);
+                        }
+                    }
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
                 } else if (upperInput.startsWith('SELECT ')) {
                     const selectionInput = rawInput.substring(7); // Remove "SELECT "
                     this.handleScreenshotSelection(selectionInput);
@@ -1242,6 +1290,7 @@ INSTRUCTIONS:
                     console.log('   NEXT/PREV - Navigate screenshot pages');
                     console.log('   SEARCH term - Filter screenshots by filename');
                     console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
+                    console.log('   LIMIT 1000 - Set word limit for ASK/NOTE context');
                     console.log('   INSTRUCTION [text] - Modify summary');
                     console.log('   NOTE [text] - Add AI-assisted note to notes file');
                     console.log('   NOTE! [text] - Create note without screenshots (faster)');
@@ -1263,6 +1312,7 @@ INSTRUCTIONS:
         console.log('   NEXT/PREV - Navigate screenshot pages');
         console.log('   SEARCH term - Filter screenshots by filename');
         console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
+        console.log('   LIMIT 1000 - Set word limit for ASK/NOTE context (LIMIT OFF to disable)');
         console.log('   INSTRUCTION [text] - Modify summary (e.g., "INSTRUCTION Split payment section")');
         console.log('   NOTE [text] - Add AI-assisted note to notes file');
         console.log('   NOTE! [text] - Create note without screenshots (faster)');

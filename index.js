@@ -14,6 +14,7 @@ class TranscriptSummarizer {
         this.currentSummary = '';
         this.pendingContent = '';
         this.wordThreshold = 200;
+        this.maxSummaryTokens = 3500; // Keep under 4000 token output limit
         this.controlTrigger = 'Message to summary robot';
         this.controlSpeaker = 'Juho';
         this.startTime = Date.now();
@@ -72,6 +73,69 @@ class TranscriptSummarizer {
         console.log(`⏱️  Runtime: ${(runtimeHours * 60).toFixed(1)} minutes | Requests: ${this.requestCount}`);
         console.log(`💵 Estimated hourly cost: $${estimatedHourlyCost.toFixed(2)}/hour`);
         console.log('─'.repeat(50));
+    }
+
+    estimateTokenCount(text) {
+        // Rough estimation: ~1.3 tokens per word for English text
+        const words = text.trim().split(/\s+/).length;
+        return Math.ceil(words * 1.3);
+    }
+
+    async condenseSummaryIfNeeded() {
+        const estimatedTokens = this.estimateTokenCount(this.currentSummary);
+        
+        if (estimatedTokens > this.maxSummaryTokens) {
+            console.log(`\n🗜️  Summary too long (${estimatedTokens} tokens), condensing...`);
+            
+            const condensePrompt = `You are condensing a meeting summary that has grown too long. Your task is to reduce it to essential information while maintaining all critical technical details.
+
+CURRENT SUMMARY (TOO LONG):
+${this.currentSummary}
+
+CONDENSATION INSTRUCTIONS:
+- KEEP all specific technical details, system names, file paths, and architectural decisions
+- KEEP the "Questions for Further Investigation" section (it's valuable for the architect)
+- REMOVE redundant explanations and verbose descriptions
+- MERGE related bullet points where possible
+- PRIORITIZE technical facts over meeting logistics
+- MAINTAIN section structure but make each point more concise
+- TARGET: Reduce to approximately 2500-3000 tokens while preserving technical value
+
+CRITICAL: Do not lose important technical information - just make it more concise.
+
+Condensed summary:`;
+
+            try {
+                const message = await this.anthropic.messages.create({
+                    model: 'claude-sonnet-4-20250514',
+                    max_tokens: 4000,
+                    messages: [{
+                        role: 'user',
+                        content: condensePrompt
+                    }]
+                });
+
+                const inputTokens = message.usage.input_tokens;
+                const outputTokens = message.usage.output_tokens;
+                const requestCost = this.calculateCost(inputTokens, outputTokens);
+
+                const oldLength = this.currentSummary.length;
+                this.currentSummary = message.content[0].text;
+                this.saveSummary();
+                
+                const newEstimatedTokens = this.estimateTokenCount(this.currentSummary);
+                
+                console.log(`\n🗜️  SUMMARY CONDENSED`);
+                console.log(`📊 Before: ${estimatedTokens} tokens (${oldLength} chars)`);
+                console.log(`📊 After: ${newEstimatedTokens} tokens (${this.currentSummary.length} chars)`);
+                console.log(`💾 Condensed summary saved to: ${this.summaryFilePath}`);
+                
+                this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+            } catch (error) {
+                console.error('Error condensing summary:', error.message);
+            }
+        }
     }
 
     parseTranscriptLine(line) {
@@ -177,6 +241,9 @@ Modified summary:`;
             console.log(`💾 Updated summary saved to: ${this.summaryFilePath}`);
             
             this.displayCostReport(requestCost, inputTokens, outputTokens);
+            
+            // Check if summary needs condensing after control instruction
+            await this.condenseSummaryIfNeeded();
 
         } catch (error) {
             console.error('Error processing control instruction:', error.message);
@@ -249,14 +316,17 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
             // Reset to end of file position
             this.lastPosition = fs.statSync(this.filePath).size;
             
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+            
+            // Check if regenerated summary needs condensing
+            await this.condenseSummaryIfNeeded();
+            
             console.log('\n🔄 SUMMARY REGENERATED FROM FULL TRANSCRIPT');
             console.log('═'.repeat(60));
             console.log(this.currentSummary);
             console.log('═'.repeat(60));
             console.log(`💾 Fresh summary saved to: ${this.summaryFilePath}`);
             console.log(`📍 Position reset to end of file: ${this.lastPosition}`);
-            
-            this.displayCostReport(requestCost, inputTokens, outputTokens);
 
         } catch (error) {
             console.error('Error regenerating summary from full transcript:', error.message);
@@ -450,6 +520,9 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
             this.saveSummary();
             
             this.displayCostReport(requestCost, inputTokens, outputTokens);
+            
+            // Check if summary needs condensing
+            await this.condenseSummaryIfNeeded();
             
             console.log('\n📋 Updated Summary:');
             console.log('='.repeat(50));

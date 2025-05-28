@@ -7,8 +7,9 @@ const readline = require('readline');
 const Anthropic = require('@anthropic-ai/sdk');
 
 class TranscriptSummarizer {
-    constructor(filePath) {
+    constructor(filePath, screenshotsDir = null) {
         this.filePath = filePath;
+        this.screenshotsDir = screenshotsDir;
         this.summaryFilePath = this.getSummaryFilePath(filePath);
         this.notesFilePath = this.getNotesFilePath(filePath);
         this.compactedFilePath = this.getCompactedFilePath(filePath);
@@ -37,6 +38,9 @@ class TranscriptSummarizer {
             apiKey: process.env.ANTHROPIC_API_KEY,
         });
         this.rl = null;
+        this.selectedScreenshots = []; // User-selected screenshots for context
+        this.screenshotPageSize = 20; // Screenshots per page
+        this.currentScreenshotPage = 0; // Current page for screenshot menu
     }
 
     getSummaryFilePath(transcriptPath) {
@@ -77,6 +81,238 @@ class TranscriptSummarizer {
             console.log(`📝 Created blank notes file: ${this.notesFilePath}`);
         } else {
             console.log(`📝 Notes file available: ${this.notesFilePath}`);
+        }
+        
+        if (this.screenshotsDir) {
+            if (fs.existsSync(this.screenshotsDir)) {
+                const screenshots = this.getScreenshotFiles();
+                const sessionScreenshots = this.getScreenshotFiles(true);
+                console.log(`📸 Screenshots directory available: ${this.screenshotsDir}`);
+                if (screenshots.length > 0) {
+                    console.log(`📸 Found ${screenshots.length} total screenshot(s), ${sessionScreenshots.length} from current session`);
+                    console.log(`📸 Use SCREENSHOTS or SESSION commands to select which to include`);
+                } else {
+                    console.log(`📸 No screenshots found in directory`);
+                }
+            } else {
+                console.log(`⚠️  Screenshots directory not found: ${this.screenshotsDir}`);
+            }
+        }
+    }
+
+    getScreenshotFiles(sessionOnly = false) {
+        if (!this.screenshotsDir || !fs.existsSync(this.screenshotsDir)) {
+            return [];
+        }
+        
+        try {
+            const files = fs.readdirSync(this.screenshotsDir);
+            let screenshots = files
+                .filter(file => /\.(png|jpg|jpeg|gif|bmp|webp)$/i.test(file))
+                .map(file => path.join(this.screenshotsDir, file));
+
+            if (sessionOnly) {
+                // Filter screenshots created/modified during this session
+                screenshots = screenshots.filter(screenshot => {
+                    try {
+                        const stats = fs.statSync(screenshot);
+                        // Use the later of creation time or modification time
+                        const fileTime = Math.max(stats.birthtime.getTime(), stats.mtime.getTime());
+                        return fileTime >= this.startTime;
+                    } catch (error) {
+                        // If we can't get file stats, exclude it from session filter
+                        return false;
+                    }
+                });
+            }
+
+            // Sort by modification time (latest first), then by filename if times are equal
+            return screenshots.sort((a, b) => {
+                try {
+                    const statsA = fs.statSync(a);
+                    const statsB = fs.statSync(b);
+                    const timeA = Math.max(statsA.birthtime.getTime(), statsA.mtime.getTime());
+                    const timeB = Math.max(statsB.birthtime.getTime(), statsB.mtime.getTime());
+                    
+                    // Latest first (descending order)
+                    if (timeA !== timeB) {
+                        return timeB - timeA;
+                    }
+                    
+                    // If times are equal, sort by filename
+                    return path.basename(a).localeCompare(path.basename(b));
+                } catch (error) {
+                    // If we can't get file stats, fall back to filename sort
+                    return path.basename(a).localeCompare(path.basename(b));
+                }
+            });
+        } catch (error) {
+            console.log('⚠️  Error reading screenshots directory:', error.message);
+            return [];
+        }
+    }
+
+    displayScreenshotMenu(searchTerm = null, sessionOnly = false) {
+        const allScreenshots = this.getScreenshotFiles();
+        const baseScreenshots = sessionOnly ? this.getScreenshotFiles(true) : allScreenshots;
+        
+        if (allScreenshots.length === 0) {
+            console.log('📸 No screenshots available');
+            return;
+        }
+
+        if (sessionOnly && baseScreenshots.length === 0) {
+            const sessionDuration = Math.round((Date.now() - this.startTime) / (1000 * 60));
+            console.log(`📸 No screenshots taken during this session (${sessionDuration} minutes)`);
+            console.log(`📊 Total screenshots available: ${allScreenshots.length}`);
+            return;
+        }
+
+        // Filter screenshots if search term provided
+        let screenshots = baseScreenshots;
+        if (searchTerm) {
+            screenshots = baseScreenshots.filter(screenshot => 
+                path.basename(screenshot).toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            
+            if (screenshots.length === 0) {
+                console.log(`📸 No screenshots found matching "${searchTerm}"`);
+                if (sessionOnly) {
+                    console.log(`📊 Session screenshots available: ${baseScreenshots.length}`);
+                }
+                console.log(`📊 Total screenshots available: ${allScreenshots.length}`);
+                return;
+            }
+        }
+
+        const totalPages = Math.ceil(screenshots.length / this.screenshotPageSize);
+        const startIdx = this.currentScreenshotPage * this.screenshotPageSize;
+        const endIdx = Math.min(startIdx + this.screenshotPageSize, screenshots.length);
+        const pageScreenshots = screenshots.slice(startIdx, endIdx);
+
+        console.log('\n📸 Available Screenshots:');
+        if (sessionOnly) {
+            const sessionDuration = Math.round((Date.now() - this.startTime) / (1000 * 60));
+            console.log(`⏰ Session only (${sessionDuration} minutes) - ${baseScreenshots.length} screenshots`);
+        }
+        if (searchTerm) {
+            console.log(`🔍 Filtered by: "${searchTerm}" (${screenshots.length} matches)`);
+        }
+        console.log(`📄 Page ${this.currentScreenshotPage + 1}/${totalPages} (${startIdx + 1}-${endIdx} of ${screenshots.length})`);
+        console.log('═'.repeat(80));
+        
+        pageScreenshots.forEach((screenshot, pageIndex) => {
+            const globalIndex = startIdx + pageIndex;
+            const filename = path.basename(screenshot);
+            const isSelected = this.selectedScreenshots.includes(screenshot);
+            const status = isSelected ? '✅' : '⬜';
+            console.log(`${globalIndex + 1}. ${status} ${filename}`);
+        });
+        
+        console.log('═'.repeat(80));
+        console.log(`📊 Currently selected: ${this.selectedScreenshots.length}/${allScreenshots.length} screenshots`);
+        console.log('\nNavigation:');
+        if (totalPages > 1) {
+            console.log('  NEXT             - Next page');
+            console.log('  PREV             - Previous page');
+            console.log('  PAGE 3           - Jump to specific page');
+        }
+        console.log('  SEARCH term      - Filter screenshots by filename');
+        console.log('  CLEAR SEARCH     - Show all screenshots');
+        console.log('  SESSION          - Show only screenshots from current session');
+        console.log('\nSelection:');
+        console.log('  SELECT 1,3,5     - Select screenshots by numbers (comma-separated)');
+        console.log('  SELECT ALL       - Select all screenshots (on current page/search)');
+        console.log('  SELECT NONE      - Clear all selections');
+        console.log('  SCREENSHOTS      - Refresh this menu');
+    }
+
+    handleScreenshotSelection(selectionInput, currentScreenshots = null) {
+        const allScreenshots = this.getScreenshotFiles();
+        const screenshots = currentScreenshots || allScreenshots;
+        
+        if (screenshots.length === 0) {
+            console.log('📸 No screenshots available');
+            return;
+        }
+
+        const upperInput = selectionInput.toUpperCase().trim();
+        
+        if (upperInput === 'ALL') {
+            // Add all current page/search results to selection (don't replace existing)
+            const newSelections = screenshots.filter(s => !this.selectedScreenshots.includes(s));
+            this.selectedScreenshots.push(...newSelections);
+            console.log(`✅ Added ${newSelections.length} screenshot(s) to selection`);
+            console.log(`📊 Total selected: ${this.selectedScreenshots.length} screenshots`);
+        } else if (upperInput === 'NONE') {
+            this.selectedScreenshots = [];
+            console.log('❌ Cleared all screenshot selections');
+        } else {
+            // Parse comma-separated numbers
+            try {
+                const numbers = upperInput.split(',').map(n => parseInt(n.trim()));
+                const validNumbers = numbers.filter(n => n >= 1 && n <= allScreenshots.length);
+                
+                if (validNumbers.length === 0) {
+                    console.log('⚠️  No valid screenshot numbers provided');
+                    return;
+                }
+                
+                const newSelections = validNumbers.map(n => allScreenshots[n - 1]);
+                
+                // Add to existing selections (toggle behavior)
+                newSelections.forEach(screenshot => {
+                    const index = this.selectedScreenshots.indexOf(screenshot);
+                    if (index === -1) {
+                        this.selectedScreenshots.push(screenshot);
+                        console.log(`✅ Added: ${path.basename(screenshot)}`);
+                    } else {
+                        this.selectedScreenshots.splice(index, 1);
+                        console.log(`❌ Removed: ${path.basename(screenshot)}`);
+                    }
+                });
+                
+                console.log(`📊 Total selected: ${this.selectedScreenshots.length} screenshots`);
+                
+            } catch (error) {
+                console.log('⚠️  Invalid selection format. Use: SELECT 1,3,5 or SELECT ALL or SELECT NONE');
+            }
+        }
+    }
+
+    handleScreenshotNavigation(command) {
+        const screenshots = this.getScreenshotFiles();
+        if (screenshots.length === 0) return;
+
+        const totalPages = Math.ceil(screenshots.length / this.screenshotPageSize);
+        const upperCommand = command.toUpperCase().trim();
+
+        if (upperCommand === 'NEXT') {
+            if (this.currentScreenshotPage < totalPages - 1) {
+                this.currentScreenshotPage++;
+                this.displayScreenshotMenu();
+            } else {
+                console.log('📄 Already on last page');
+            }
+        } else if (upperCommand === 'PREV') {
+            if (this.currentScreenshotPage > 0) {
+                this.currentScreenshotPage--;
+                this.displayScreenshotMenu();
+            } else {
+                console.log('📄 Already on first page');
+            }
+        } else if (upperCommand.startsWith('PAGE ')) {
+            try {
+                const pageNum = parseInt(upperCommand.substring(5).trim());
+                if (pageNum >= 1 && pageNum <= totalPages) {
+                    this.currentScreenshotPage = pageNum - 1;
+                    this.displayScreenshotMenu();
+                } else {
+                    console.log(`⚠️  Page must be between 1 and ${totalPages}`);
+                }
+            } catch (error) {
+                console.log('⚠️  Invalid page number format. Use: PAGE 3');
+            }
         }
     }
 
@@ -658,7 +894,7 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
         }
     }
 
-    async createNote(noteRequest) {
+    async createNote(noteRequest, forceTextOnly = false) {
         try {
             // Get the active transcript (compressed if available)
             const fullTranscript = this.getActiveTranscript();
@@ -668,7 +904,9 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
                 return;
             }
 
-            const prompt = `You are an AI assistant helping create concise meeting notes for a SOFTWARE SOLUTION ARCHITECT. You have access to the meeting transcript and are asked to create a brief note about a specific topic.
+            const messages = [];
+
+            let promptText = `You are an AI assistant helping create concise meeting notes for a SOFTWARE SOLUTION ARCHITECT. You have access to the meeting transcript and are asked to create a brief note about a specific topic.
 
 MEETING TRANSCRIPT:
 ${fullTranscript}
@@ -682,18 +920,95 @@ INSTRUCTIONS:
 - Use a conversational, note-taking style rather than formal documentation
 - If the topic isn't discussed in the transcript, state that clearly
 - Keep it concise - this is a quick note, not a full analysis
-- IMPORTANT: Write the note in the same language as the note request - if the request is in Finnish, respond in Finnish; if in English, respond in English
+- IMPORTANT: Write the note in the same language as the note request - if the request is in Finnish, respond in Finnish; if in English, respond in English`;
 
-Brief note:`;
+            const useScreenshots = !forceTextOnly && this.selectedScreenshots.length > 0;
+            
+            if (useScreenshots) {
+                promptText += `\n- You also have access to ${this.selectedScreenshots.length} selected meeting screenshot(s) that may provide visual context`;
+            }
 
-            const message = await this.anthropic.messages.create({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 300,
-                messages: [{
-                    role: 'user',
-                    content: prompt
-                }]
-            });
+            promptText += `\n\nBrief note:`;
+
+            // Add text content
+            const content = [{ type: 'text', text: promptText }];
+
+            // Add selected screenshots (unless forced text-only)
+            if (useScreenshots) {
+                console.log(`📸 Including ${this.selectedScreenshots.length} selected screenshot(s) for context`);
+                
+                for (const screenshotPath of this.selectedScreenshots) {
+                    try {
+                        const imageData = fs.readFileSync(screenshotPath);
+                        const base64Image = imageData.toString('base64');
+                        const fileExtension = path.extname(screenshotPath).toLowerCase().substring(1);
+                        const mimeType = fileExtension === 'jpg' ? 'jpeg' : fileExtension;
+                        
+                        content.push({
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: `image/${mimeType}`,
+                                data: base64Image
+                            }
+                        });
+                        console.log(`   📸 ${path.basename(screenshotPath)}`);
+                    } catch (error) {
+                        console.log(`⚠️  Could not read screenshot ${screenshotPath}:`, error.message);
+                    }
+                }
+            } else if (forceTextOnly && this.selectedScreenshots.length > 0) {
+                console.log(`📝 Skipping ${this.selectedScreenshots.length} screenshot(s) for faster processing`);
+            }
+
+            messages.push({ role: 'user', content });
+
+            // Check if we should try without screenshots first to reduce load
+            const hasScreenshots = this.selectedScreenshots.length > 0;
+            let shouldRetryWithoutScreenshots = false;
+
+            // Retry logic for API errors
+            let message;
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount <= maxRetries) {
+                try {
+                    // If we've failed with screenshots, try without them
+                    const messagesToSend = shouldRetryWithoutScreenshots && hasScreenshots 
+                        ? [{ role: 'user', content: [{ type: 'text', text: promptText }] }]
+                        : messages;
+                    
+                    if (shouldRetryWithoutScreenshots && hasScreenshots) {
+                        console.log('🔄 Retrying without screenshots to reduce request size...');
+                    }
+
+                    message = await this.anthropic.messages.create({
+                        model: 'claude-sonnet-4-20250514',
+                        max_tokens: 300,
+                        messages: messagesToSend
+                    });
+                    break; // Success, exit retry loop
+                } catch (error) {
+                    retryCount++;
+                    
+                    if (error.status === 529) {
+                        if (retryCount === 2 && hasScreenshots && !shouldRetryWithoutScreenshots) {
+                            // After first retry with screenshots fails, try without them
+                            shouldRetryWithoutScreenshots = true;
+                            retryCount--; // Don't count this as a retry attempt
+                        } else if (retryCount <= maxRetries) {
+                            const waitTime = Math.pow(2, retryCount) * 1000; // Exponential backoff
+                            console.log(`⏳ API overloaded, retrying in ${waitTime/1000} seconds... (attempt ${retryCount}/${maxRetries})`);
+                            await new Promise(resolve => setTimeout(resolve, waitTime));
+                        } else {
+                            throw error;
+                        }
+                    } else {
+                        throw error; // Re-throw if not retryable
+                    }
+                }
+            }
 
             const inputTokens = message.usage.input_tokens;
             const outputTokens = message.usage.output_tokens;
@@ -725,7 +1040,9 @@ Brief note:`;
                 return;
             }
 
-            const prompt = `You are an AI assistant helping a SOFTWARE SOLUTION ARCHITECT understand a meeting transcript. Answer the user's question based on the meeting content.
+            const messages = [];
+
+            let promptText = `You are an AI assistant helping a SOFTWARE SOLUTION ARCHITECT understand a meeting transcript. Answer the user's question based on the meeting content.
 
 MEETING TRANSCRIPT:
 ${fullTranscript}
@@ -738,18 +1055,70 @@ INSTRUCTIONS:
 - If the information is not in the transcript, clearly state that
 - Include relevant quotes or references from the transcript when helpful
 - Focus on technical accuracy and architect-relevant details
-- If the question is unclear, ask for clarification
+- If the question is unclear, ask for clarification`;
 
-Answer:`;
+            if (this.selectedScreenshots.length > 0) {
+                promptText += `\n- You also have access to ${this.selectedScreenshots.length} selected meeting screenshot(s) that may provide visual context`;
+            }
 
-            const message = await this.anthropic.messages.create({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 1500,
-                messages: [{
-                    role: 'user',
-                    content: prompt
-                }]
-            });
+            promptText += `\n\nAnswer:`;
+
+            // Add text content
+            const content = [{ type: 'text', text: promptText }];
+
+            // Add selected screenshots
+            if (this.selectedScreenshots.length > 0) {
+                console.log(`📸 Including ${this.selectedScreenshots.length} selected screenshot(s) for context`);
+                
+                for (const screenshotPath of this.selectedScreenshots) {
+                    try {
+                        const imageData = fs.readFileSync(screenshotPath);
+                        const base64Image = imageData.toString('base64');
+                        const fileExtension = path.extname(screenshotPath).toLowerCase().substring(1);
+                        const mimeType = fileExtension === 'jpg' ? 'jpeg' : fileExtension;
+                        
+                        content.push({
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: `image/${mimeType}`,
+                                data: base64Image
+                            }
+                        });
+                        console.log(`   📸 ${path.basename(screenshotPath)}`);
+                    } catch (error) {
+                        console.log(`⚠️  Could not read screenshot ${screenshotPath}:`, error.message);
+                    }
+                }
+            }
+
+            messages.push({ role: 'user', content });
+
+            // Retry logic for API errors
+            let message;
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount <= maxRetries) {
+                try {
+                    message = await this.anthropic.messages.create({
+                        model: 'claude-sonnet-4-20250514',
+                        max_tokens: 1500,
+                        messages
+                    });
+                    break; // Success, exit retry loop
+                } catch (error) {
+                    retryCount++;
+                    
+                    if (error.status === 529 && retryCount <= maxRetries) {
+                        const waitTime = Math.pow(2, retryCount) * 1000; // Exponential backoff
+                        console.log(`⏳ API overloaded, retrying in ${waitTime/1000} seconds... (attempt ${retryCount}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                    } else {
+                        throw error; // Re-throw if not retryable or max retries exceeded
+                    }
+                }
+            }
 
             const inputTokens = message.usage.input_tokens;
             const outputTokens = message.usage.output_tokens;
@@ -811,11 +1180,41 @@ Answer:`;
                         console.log('👁️  Will only monitor transcript - use SUMMARIZE to create summaries');
                     }
                     console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput === 'SCREENSHOTS') {
+                    this.currentScreenshotPage = 0; // Reset to first page
+                    this.displayScreenshotMenu();
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput === 'NEXT' || upperInput === 'PREV' || upperInput.startsWith('PAGE ')) {
+                    this.handleScreenshotNavigation(rawInput);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput.startsWith('SEARCH ')) {
+                    const searchTerm = rawInput.substring(7).trim();
+                    this.currentScreenshotPage = 0; // Reset to first page for search
+                    this.displayScreenshotMenu(searchTerm);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput === 'CLEAR SEARCH') {
+                    this.currentScreenshotPage = 0;
+                    this.displayScreenshotMenu();
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput === 'SESSION') {
+                    this.currentScreenshotPage = 0;
+                    this.displayScreenshotMenu(null, true);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput.startsWith('SELECT ')) {
+                    const selectionInput = rawInput.substring(7); // Remove "SELECT "
+                    this.handleScreenshotSelection(selectionInput);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
                 } else if (upperInput.startsWith('INSTRUCTION ')) {
                     const instruction = rawInput.substring(12); // Remove "INSTRUCTION "
                     console.log(`\n⌨️  PROCESSING SUMMARY INSTRUCTION: "${instruction}"`);
                     console.log('⏳ Applying instruction to summary...\n');
                     await this.processControlInstruction(instruction);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput.startsWith('NOTE! ')) {
+                    const noteRequest = rawInput.substring(6); // Remove "NOTE! "
+                    console.log(`\n📝 CREATING AI-ASSISTED NOTE (TEXT-ONLY): "${noteRequest}"`);
+                    console.log('⏳ Generating note from transcript context...\n');
+                    await this.createNote(noteRequest, true); // Force text-only
                     console.log('\n💬 Ready for next command (or continue with meeting)');
                 } else if (upperInput.startsWith('NOTE ')) {
                     const noteRequest = rawInput.substring(5); // Remove "NOTE "
@@ -840,8 +1239,14 @@ Answer:`;
         console.log('   COMPACT - Compress transcript to reduce context size');
         console.log('   UNCOMPACT - Revert to using original uncompressed transcript');
         console.log('   READONLY - Toggle read-only mode on/off');
+        console.log('   SCREENSHOTS - Show screenshot selection menu (paginated)');
+        console.log('   SESSION - Show only screenshots from current session');
+        console.log('   NEXT/PREV - Navigate screenshot pages');
+        console.log('   SEARCH term - Filter screenshots by filename');
+        console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
         console.log('   INSTRUCTION [text] - Modify summary (e.g., "INSTRUCTION Split payment section")');
         console.log('   NOTE [text] - Add AI-assisted note to notes file');
+        console.log('   NOTE! [text] - Create note without screenshots (faster)');
         console.log('   [question] - Ask question about transcript (CLI response only)');
     }
 
@@ -850,6 +1255,9 @@ Answer:`;
         console.log(`Summary will be saved to: ${this.summaryFilePath}`);
         console.log(`Notes will be saved to: ${this.notesFilePath}`);
         console.log(`Compacted transcripts will be saved to: ${this.compactedFilePath}`);
+        if (this.screenshotsDir) {
+            console.log(`Screenshots directory: ${this.screenshotsDir}`);
+        }
         console.log(`🎛️  Control channel: Say "${this.controlTrigger}" as "${this.controlSpeaker}" to send instructions`);
         console.log(`👁️  Started in READ-ONLY mode - use SUMMARIZE command to create summaries`);
         
@@ -1090,9 +1498,10 @@ function expandPath(filePath) {
 
 function main() {
     const filePath = process.argv[2];
+    const screenshotsDir = process.argv[3]; // Optional screenshots directory
     
     if (!filePath) {
-        console.error('Usage: node index.js <transcript-file-path>');
+        console.error('Usage: node index.js <transcript-file-path> [screenshots-directory]');
         process.exit(1);
     }
 
@@ -1102,7 +1511,8 @@ function main() {
     }
 
     const expandedFilePath = expandPath(filePath);
-    const summarizer = new TranscriptSummarizer(expandedFilePath);
+    const expandedScreenshotsDir = screenshotsDir ? expandPath(screenshotsDir) : null;
+    const summarizer = new TranscriptSummarizer(expandedFilePath, expandedScreenshotsDir);
     
     process.on('SIGINT', async () => {
         console.log('\nReceived Ctrl+C, stopping...');

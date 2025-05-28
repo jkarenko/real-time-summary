@@ -332,6 +332,67 @@ class TranscriptSummarizer {
         return limitedWords.join(' ');
     }
 
+    displaySessionSettings() {
+        console.log('\n⚙️  Current Session Settings:');
+        console.log('═'.repeat(50));
+        
+        // Read-only mode
+        console.log(`📖 Read-only mode: ${this.readOnlyMode ? 'ON' : 'OFF'}`);
+        if (this.readOnlyMode) {
+            console.log('   → Use SUMMARIZE command to create summaries');
+        } else {
+            console.log('   → Auto-updates summary when threshold reached');
+        }
+        
+        // Context compression
+        if (this.useCompressed && this.compressedTranscript) {
+            console.log('🗜️  Context compression: ACTIVE');
+            console.log('   → Using compressed transcript for AI operations');
+        } else {
+            console.log('🗜️  Context compression: OFF');
+            console.log('   → Using original uncompressed transcript');
+        }
+        
+        // Context word limit
+        if (this.contextWordLimit > 0) {
+            console.log(`📊 Context word limit: ${this.contextWordLimit.toLocaleString()} words`);
+            console.log('   → ASK/NOTE commands use last N words of transcript');
+        } else {
+            console.log('📊 Context word limit: OFF');
+            console.log('   → ASK/NOTE commands use full transcript');
+        }
+        
+        // Screenshot selection
+        const totalScreenshots = this.getScreenshotFiles().length;
+        const sessionScreenshots = this.screenshotsDir ? this.getScreenshotFiles(true).length : 0;
+        
+        if (this.screenshotsDir) {
+            console.log(`📸 Screenshots: ${this.selectedScreenshots.length} selected`);
+            console.log(`   → Total available: ${totalScreenshots}, Session: ${sessionScreenshots}`);
+            if (this.selectedScreenshots.length > 0) {
+                console.log('   → Selected screenshots included in ASK/NOTE commands');
+            }
+        } else {
+            console.log('📸 Screenshots: Not configured');
+        }
+        
+        // Session runtime
+        const runtimeMinutes = Math.round((Date.now() - this.startTime) / (1000 * 60));
+        const runtimeHours = Math.floor(runtimeMinutes / 60);
+        const remainingMinutes = runtimeMinutes % 60;
+        
+        if (runtimeHours > 0) {
+            console.log(`⏱️  Session runtime: ${runtimeHours}h ${remainingMinutes}m`);
+        } else {
+            console.log(`⏱️  Session runtime: ${runtimeMinutes} minutes`);
+        }
+        
+        // API usage summary
+        console.log(`💰 API usage: ${this.requestCount} requests, $${this.totalCost.toFixed(4)} total cost`);
+        
+        console.log('═'.repeat(50));
+    }
+
     saveNote(note) {
         const now = new Date();
         const timestamp = now.getFullYear() + '-' + 
@@ -1248,6 +1309,9 @@ INSTRUCTIONS:
                         }
                     }
                     console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput === 'SETTINGS') {
+                    this.displaySessionSettings();
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
                 } else if (upperInput.startsWith('SELECT ')) {
                     const selectionInput = rawInput.substring(7); // Remove "SELECT "
                     this.handleScreenshotSelection(selectionInput);
@@ -1291,6 +1355,7 @@ INSTRUCTIONS:
                     console.log('   SEARCH term - Filter screenshots by filename');
                     console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
                     console.log('   LIMIT 1000 - Set word limit for ASK/NOTE context');
+                    console.log('   SETTINGS - Show current session settings');
                     console.log('   INSTRUCTION [text] - Modify summary');
                     console.log('   NOTE [text] - Add AI-assisted note to notes file');
                     console.log('   NOTE! [text] - Create note without screenshots (faster)');
@@ -1313,6 +1378,7 @@ INSTRUCTIONS:
         console.log('   SEARCH term - Filter screenshots by filename');
         console.log('   SELECT 1,3,5 - Select/toggle screenshots by numbers');
         console.log('   LIMIT 1000 - Set word limit for ASK/NOTE context (LIMIT OFF to disable)');
+        console.log('   SETTINGS - Show current session settings');
         console.log('   INSTRUCTION [text] - Modify summary (e.g., "INSTRUCTION Split payment section")');
         console.log('   NOTE [text] - Add AI-assisted note to notes file');
         console.log('   NOTE! [text] - Create note without screenshots (faster)');

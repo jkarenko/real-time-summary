@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // File operations
     selectTranscriptFile: () => ipcRenderer.invoke('select-transcript-file'),
     selectScreenshotsDir: () => ipcRenderer.invoke('select-screenshots-dir'),
+    openFile: () => ipcRenderer.invoke('open-file'),
     
     // Summarizer operations
     createSummary: (sessionContext) => ipcRenderer.invoke('create-summary', sessionContext),

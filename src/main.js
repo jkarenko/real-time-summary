@@ -1,6 +1,6 @@
 // Main process - Electron main process with TranscriptSummarizer integration
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -53,6 +53,9 @@ class ElectronTranscriptApp {
 
     async createWindow() {
         console.log('createWindow called');
+        
+        // Create application menu
+        this.createMenu();
         
         // Load saved window state
         this.loadWindowState();
@@ -136,12 +139,140 @@ class ElectronTranscriptApp {
         }
     }
 
+    createMenu() {
+        const template = [
+            {
+                label: 'File',
+                submenu: [
+                    {
+                        label: 'Open Transcript...',
+                        accelerator: 'CmdOrCtrl+O',
+                        click: () => {
+                            this.handleOpenTranscript();
+                        }
+                    },
+                    {
+                        label: 'Select Screenshots Directory...',
+                        click: () => {
+                            this.handleSelectScreenshotsDir();
+                        }
+                    },
+                    { type: 'separator' },
+                    {
+                        label: 'Quit',
+                        accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+                        click: () => {
+                            app.quit();
+                        }
+                    }
+                ]
+            }
+        ];
+
+        // On macOS, add the app menu
+        if (process.platform === 'darwin') {
+            template.unshift({
+                label: app.getName(),
+                submenu: [
+                    { role: 'about' },
+                    { type: 'separator' },
+                    { role: 'services' },
+                    { type: 'separator' },
+                    { role: 'hide' },
+                    { role: 'hideothers' },
+                    { role: 'unhide' },
+                    { type: 'separator' },
+                    { role: 'quit' }
+                ]
+            });
+
+            // Add Window menu
+            template.push({
+                label: 'Window',
+                submenu: [
+                    { role: 'minimize' },
+                    { role: 'close' }
+                ]
+            });
+        }
+
+        const menu = Menu.buildFromTemplate(template);
+        Menu.setApplicationMenu(menu);
+    }
+
+    async handleOpenTranscript() {
+        console.log('handleOpenTranscript called');
+        
+        // Stop existing summarizer if running
+        if (this.summarizer) {
+            console.log('Stopping existing summarizer...');
+            await this.summarizer.stop();
+            this.summarizer = null;
+            this.sendToRenderer('status-update', { connected: false });
+        }
+
+        // Show file selection dialog
+        const result = await dialog.showOpenDialog(this.mainWindow, {
+            title: 'Select Transcript File',
+            properties: ['openFile'],
+            filters: [
+                { name: 'Text Files', extensions: ['txt', 'log', 'md'] },
+                { name: 'Subtitle Files', extensions: ['srt', 'vtt'] },
+                { name: 'All Files', extensions: ['*'] }
+            ]
+        });
+
+        if (!result.canceled && result.filePaths.length > 0) {
+            // Update app settings with new transcript file
+            this.appSettings.transcriptFile = result.filePaths[0];
+            
+            // Save settings
+            this.saveSettings();
+            
+            // Reinitialize summarizer with new file
+            this.initializeSummarizer();
+        }
+    }
+
+    async handleSelectScreenshotsDir() {
+        console.log('handleSelectScreenshotsDir called');
+        
+        // Show directory selection dialog
+        const result = await dialog.showOpenDialog(this.mainWindow, {
+            title: 'Select Screenshots Directory',
+            properties: ['openDirectory']
+        });
+
+        if (!result.canceled && result.filePaths.length > 0) {
+            // Update app settings with new screenshots directory
+            this.appSettings.screenshotsDir = result.filePaths[0];
+            
+            // Save settings
+            this.saveSettings();
+            
+            // Update summarizer's screenshots directory if it exists
+            if (this.summarizer) {
+                this.summarizer.screenshotsDir = this.appSettings.screenshotsDir;
+                // Re-setup screenshot watcher with new directory
+                if (this.summarizer.setupScreenshotWatcher) {
+                    this.summarizer.setupScreenshotWatcher();
+                }
+                // Send updated screenshots to renderer
+                this.sendScreenshotsUpdate();
+            }
+            
+            // Send updated app data to renderer
+            this.sendAppDataUpdate();
+        }
+    }
+
     async showFileSelectionDialog() {
         const result = await dialog.showOpenDialog(this.mainWindow, {
             title: 'Select Transcript File',
             properties: ['openFile'],
             filters: [
-                { name: 'Text Files', extensions: ['txt', 'log'] },
+                { name: 'Text Files', extensions: ['txt', 'log', 'md'] },
+                { name: 'Subtitle Files', extensions: ['srt', 'vtt'] },
                 { name: 'All Files', extensions: ['*'] }
             ]
         });
@@ -211,7 +342,8 @@ class ElectronTranscriptApp {
                 title: 'Select Transcript File',
                 properties: ['openFile'],
                 filters: [
-                    { name: 'Text Files', extensions: ['txt', 'log'] },
+                    { name: 'Text Files', extensions: ['txt', 'log', 'md'] },
+                    { name: 'Subtitle Files', extensions: ['srt', 'vtt'] },
                     { name: 'All Files', extensions: ['*'] }
                 ]
             });
@@ -364,6 +496,10 @@ class ElectronTranscriptApp {
         // Menu and external links
         ipcMain.handle('open-external', (_, url) => {
             shell.openExternal(url);
+        });
+
+        ipcMain.handle('open-file', async () => {
+            await this.handleOpenFile();
         });
 
         // Renderer ready signal
@@ -751,30 +887,49 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             const content = fs.readFileSync(this.filePath, 'utf8');
             console.log('Transcript content length:', content.length);
             
-            // First check if this is already line-separated (time range format)
+            // Split content into lines
             const initialLines = content.split('\n').filter(line => line.trim());
+            console.log('Total initial lines:', initialLines.length);
+            
+            // Check if this is already line-separated (time range format like SRT)
             const hasTimeRangeFormat = initialLines.some(line => 
                 line.match(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]/)
             );
             
-            let lines;
+            let lines = [];
             
             if (hasTimeRangeFormat) {
                 // Time range format is already separated by lines
                 lines = initialLines;
                 console.log('Detected time range format, using existing line breaks');
             } else {
-                // Split by timestamp markers [XX:XX:XX.XX] to handle single-line transcripts
-                const timestampPattern = /(\[\d{2}:\d{2}:\d{2}\.\d{2}\]:?)/g;
-                const segments = content.split(timestampPattern).filter(segment => segment.trim());
+                // Check if this is Microsoft Teams format with speaker changes
+                const firstLineHasTimestamp = initialLines[0] && initialLines[0].match(/^\[\d{2}:\d{2}:\d{2}\.\d+\]/);
                 
-                console.log('Total segments after splitting by timestamps:', segments.length);
-                
-                // Reconstruct lines by combining timestamp + content pairs
-                lines = [];
-                for (let i = 0; i < segments.length - 1; i += 2) {
-                    if (segments[i].match(timestampPattern) && segments[i + 1]) {
-                        lines.push(segments[i] + segments[i + 1]);
+                if (firstLineHasTimestamp) {
+                    console.log('Detected Microsoft Teams format');
+                    
+                    // For Microsoft Teams format, treat each line as a separate transcript entry
+                    // but preserve the original text format without adding synthetic speakers/timestamps
+                    for (let i = 0; i < initialLines.length; i++) {
+                        const line = initialLines[i];
+                        
+                        if (line.trim()) {
+                            lines.push(line);
+                        }
+                    }
+                } else {
+                    // Try to split by timestamp markers [XX:XX:XX.XX] for other formats
+                    const timestampPattern = /(\[\d{2}:\d{2}:\d{2}\.\d{1,3}\]:?)/g;
+                    const segments = content.split(timestampPattern).filter(segment => segment.trim());
+                    
+                    console.log('Total segments after splitting by timestamps:', segments.length);
+                    
+                    // Reconstruct lines by combining timestamp + content pairs
+                    for (let i = 0; i < segments.length - 1; i += 2) {
+                        if (segments[i].match(timestampPattern) && segments[i + 1]) {
+                            lines.push(segments[i] + segments[i + 1]);
+                        }
                     }
                 }
             }
@@ -783,11 +938,14 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             
             if (lines.length > 0) {
                 console.log('First line example:', lines[0].substring(0, 100) + '...');
-                console.log('Parsed first line:', this.parseTranscriptLine(lines[0]));
+                console.log('Second line example:', lines[1] ? lines[1].substring(0, 100) + '...' : 'No second line');
+                console.log('Third line example:', lines[2] ? lines[2].substring(0, 100) + '...' : 'No third line');
             }
             
-            const parsedLines = lines.map(line => {
-                const parsed = this.parseTranscriptLine(line.trim());
+            // Parse each line using a more flexible parser
+            const parsedLines = lines.map((line, index) => {
+                const parsed = this.parseTranscriptLineFlexible(line.trim(), index);
+                console.log(`Line ${index + 1}: "${line.trim().substring(0, 50)}..." -> Parsed:`, parsed ? 'SUCCESS' : 'FAILED');
                 if (parsed) {
                     return {
                         timestamp: parsed.timestamp,
@@ -804,6 +962,41 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             console.error('Error parsing transcript lines:', error);
             return [];
         }
+    }
+
+    parseTranscriptLineFlexible(line, index) {
+        // Try multiple patterns to extract timestamp, speaker, and content
+        
+        // Pattern 1: [HH:MM:SS.SS] Speaker: Content
+        let match = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{1,3})\]\s*([^:]+):\s*(.+)$/);
+        if (match) {
+            return {
+                timestamp: match[1],
+                speaker: match[2].trim(),
+                content: match[3].trim()
+            };
+        }
+        
+        // Pattern 2: [HH:MM:SS.SS] Content (no explicit speaker)
+        match = line.match(/^\[(\d{2}:\d{2}:\d{2}\.\d{1,3})\]\s*(.+)$/);
+        if (match) {
+            return {
+                timestamp: match[1],
+                speaker: '', // Empty speaker for display
+                content: match[2].trim()
+            };
+        }
+        
+        // Pattern 3: Just content without timestamp (don't add synthetic data)
+        if (line.trim()) {
+            return {
+                timestamp: '', // Empty timestamp for display
+                speaker: '', // Empty speaker for display
+                content: line.trim()
+            };
+        }
+        
+        return null;
     }
 
     getWordCount() {

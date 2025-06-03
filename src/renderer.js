@@ -185,7 +185,13 @@ class RendererApp {
         
         // Add new lines with animation
         lines.forEach((line, index) => {
-            if (!this.transcriptLines.find(l => l.timestamp === line.timestamp)) {
+            // Create a unique identifier for duplicate checking
+            const lineId = line.timestamp + '|' + line.speaker + '|' + line.content.substring(0, 50);
+            
+            if (!this.transcriptLines.find(l => {
+                const existingId = l.timestamp + '|' + l.speaker + '|' + l.content.substring(0, 50);
+                return existingId === lineId;
+            })) {
                 // Add word position information for selection
                 line.wordIndex = this.transcriptLines.reduce((acc, curr) => acc + curr.content.split(/\s+/).length, 0);
                 line.wordCount = line.content.split(/\s+/).length;
@@ -230,10 +236,16 @@ class RendererApp {
             }
         });
         
-        lineElement.innerHTML = `
-            <span class="transcript-timestamp">[${line.timestamp}]</span>
-            <span class="transcript-speaker">${line.speaker}:</span>
-        `;
+        // Only show timestamp and speaker if they exist
+        let lineHTML = '';
+        if (line.timestamp) {
+            lineHTML += `<span class="transcript-timestamp">[${line.timestamp}]</span>`;
+        }
+        if (line.speaker) {
+            lineHTML += `<span class="transcript-speaker">${line.speaker}:</span>`;
+        }
+        
+        lineElement.innerHTML = lineHTML;
         lineElement.appendChild(contentSpan);
 
         this.transcriptContent.appendChild(lineElement);

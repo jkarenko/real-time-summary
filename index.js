@@ -1115,6 +1115,106 @@ INSTRUCTIONS:
         }
     }
 
+    async createNoteFromScreenshotsOnly(noteRequest) {
+        try {
+            if (this.selectedScreenshots.length === 0) {
+                console.log('⚠️  No screenshots selected. Use SCREENSHOTS command to select some first.');
+                return;
+            }
+
+            const messages = [];
+
+            let promptText = `You are an AI assistant helping create concise meeting notes for a SOFTWARE SOLUTION ARCHITECT. You have access to selected meeting screenshot(s) and are asked to create a brief note based on the visual content.
+
+NOTE REQUEST:
+${noteRequest}
+
+INSTRUCTIONS:
+- Create a brief, focused note (2-8 sentences and a list of bullet points depending on the need) based on the request and screenshot content
+- Analyze the visual content in the screenshots to provide relevant information
+- Use a conversational, note-taking style rather than formal documentation
+- If the requested topic isn't visible in the screenshots, state that clearly
+- Keep it concise - this is a quick note, not a full analysis
+- IMPORTANT: Write the note in the same language as the note request - if the request is in Finnish, respond in Finnish; if in English, respond in English
+- Focus on visual elements: UI components, diagrams, code snippets, or other content visible in the screenshots
+
+Brief note based on screenshots:`;
+
+            // Add text content
+            const content = [{ type: 'text', text: promptText }];
+
+            // Add selected screenshots
+            console.log(`📸 Analyzing ${this.selectedScreenshots.length} selected screenshot(s)`);
+            
+            for (const screenshotPath of this.selectedScreenshots) {
+                try {
+                    const imageData = fs.readFileSync(screenshotPath);
+                    const base64Image = imageData.toString('base64');
+                    const fileExtension = path.extname(screenshotPath).toLowerCase().substring(1);
+                    const mimeType = fileExtension === 'jpg' ? 'jpeg' : fileExtension;
+                    
+                    content.push({
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: `image/${mimeType}`,
+                            data: base64Image
+                        }
+                    });
+                    console.log(`   📸 ${path.basename(screenshotPath)}`);
+                } catch (error) {
+                    console.log(`⚠️  Could not read screenshot ${screenshotPath}:`, error.message);
+                }
+            }
+
+            messages.push({ role: 'user', content });
+
+            // Retry logic for API errors
+            let message;
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount <= maxRetries) {
+                try {
+                    message = await this.anthropic.messages.create({
+                        model: 'claude-sonnet-4-20250514',
+                        max_tokens: 800,
+                        messages
+                    });
+                    break; // Success, exit retry loop
+                } catch (error) {
+                    retryCount++;
+                    
+                    if (error.status === 529 && retryCount <= maxRetries) {
+                        const waitTime = Math.pow(2, retryCount) * 1000; // Exponential backoff
+                        console.log(`⏳ API overloaded, retrying in ${waitTime/1000} seconds... (attempt ${retryCount}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                    } else {
+                        throw error; // Re-throw if not retryable or max retries exceeded
+                    }
+                }
+            }
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+
+            const noteContent = message.content[0].text;
+            this.saveNote(`NOTE (Screenshots Only): ${noteRequest}\n\n${noteContent}`);
+            
+            console.log('📸 AI-ASSISTED NOTE CREATED FROM SCREENSHOTS:');
+            console.log('─'.repeat(50));
+            console.log(noteContent);
+            console.log('─'.repeat(50));
+            console.log(`💾 Note saved to: ${this.notesFilePath}`);
+            
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+        } catch (error) {
+            console.error('Error creating note from screenshots:', error.message);
+        }
+    }
+
     async answerQuestion(question) {
         try {
             // Get the active transcript (compressed if available)
@@ -1322,6 +1422,12 @@ INSTRUCTIONS:
                     console.log('⏳ Applying instruction to summary...\n');
                     await this.processControlInstruction(instruction);
                     console.log('\n💬 Ready for next command (or continue with meeting)');
+                } else if (upperInput.startsWith('NOTE!! ')) {
+                    const noteRequest = rawInput.substring(7); // Remove "NOTE!! "
+                    console.log(`\n📸 CREATING AI-ASSISTED NOTE (SCREENSHOTS-ONLY): "${noteRequest}"`);
+                    console.log('⏳ Generating note from selected screenshots...\n');
+                    await this.createNoteFromScreenshotsOnly(noteRequest);
+                    console.log('\n💬 Ready for next command (or continue with meeting)');
                 } else if (upperInput.startsWith('NOTE! ')) {
                     const noteRequest = rawInput.substring(6); // Remove "NOTE! "
                     console.log(`\n📝 CREATING AI-ASSISTED NOTE (TEXT-ONLY): "${noteRequest}"`);
@@ -1359,6 +1465,7 @@ INSTRUCTIONS:
                     console.log('   INSTRUCTION [text] - Modify summary');
                     console.log('   NOTE [text] - Add AI-assisted note to notes file');
                     console.log('   NOTE! [text] - Create note without screenshots (faster)');
+                    console.log('   NOTE!! [text] - Create note using only selected screenshots');
                     console.log('   ASK [question] - Ask question about transcript');
                     console.log('\n💬 Ready for next command (or continue with meeting)');
                 }
@@ -1382,6 +1489,7 @@ INSTRUCTIONS:
         console.log('   INSTRUCTION [text] - Modify summary (e.g., "INSTRUCTION Split payment section")');
         console.log('   NOTE [text] - Add AI-assisted note to notes file');
         console.log('   NOTE! [text] - Create note without screenshots (faster)');
+        console.log('   NOTE!! [text] - Create note using only selected screenshots');
         console.log('   ASK [question] - Ask question about transcript (CLI response only)');
     }
 

@@ -469,6 +469,57 @@ body {
     width: 4px;
 }
 
+/* Yellow post-it style timeline note markers */
+.timeline-note-marker {
+    position: absolute;
+    top: -8px;
+    width: 16px;
+    height: 16px;
+    background: #ffd700;
+    border: 1px solid #e6c200;
+    border-radius: 2px;
+    cursor: pointer;
+    transform: translateX(-50%);
+    z-index: 10;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s ease;
+}
+
+.timeline-note-marker::before {
+    content: '📝';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 10px;
+    line-height: 1;
+}
+
+.timeline-note-marker:hover {
+    background: #ffed4e;
+    border-color: #d1b300;
+    transform: translateX(-50%) scale(1.2);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    z-index: 11;
+}
+
+.timeline-note-marker:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    z-index: 12;
+    margin-bottom: 5px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
 .selection-area {
     position: absolute;
     top: 0;

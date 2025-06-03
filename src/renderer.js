@@ -449,6 +449,11 @@ class RendererApp {
         // Update cursor position (percentage of current words loaded vs total)
         const percentage = Math.min((currentWordPosition / this.wordCount) * 100, 100);
         this.timelineCursor.style.left = `${percentage}%`;
+        
+        // Update note marker positions when word count changes
+        if (this.notesLoaded) {
+            this.extractAndDisplayNoteMarkers();
+        }
     }
 
     handleTimelineClick(e) {
@@ -770,6 +775,7 @@ class RendererApp {
                     // Add a small delay to ensure DOM is fully updated
                     setTimeout(() => {
                         this.setupNoteClickHandlers();
+                        this.extractAndDisplayNoteMarkers();
                         // Enable autosave now that notes are loaded
                         this.notesLoaded = true;
                     }, 100);
@@ -780,6 +786,196 @@ class RendererApp {
             }
         } catch (error) {
             console.error('Error loading existing notes:', error);
+        }
+    }
+
+    extractAndDisplayNoteMarkers() {
+        // Clear existing note markers
+        this.noteMarkers.innerHTML = '';
+        
+        // Extract note positions from all H2 headers with word indices
+        const h2Elements = this.notesEditor.querySelectorAll('h2');
+        const notePositions = [];
+        
+        h2Elements.forEach((h2, index) => {
+            // Look for a word index comment after the h2
+            let nextNode = h2.nextSibling;
+            let commentNode = null;
+            
+            // Search through the next few siblings to find the comment node
+            while (nextNode && !commentNode) {
+                if (nextNode.nodeType === Node.COMMENT_NODE) {
+                    commentNode = nextNode;
+                    break;
+                } else if (nextNode.nodeType === Node.TEXT_NODE && nextNode.textContent.trim() === '') {
+                    // Skip empty text nodes (spaces/whitespace)
+                    nextNode = nextNode.nextSibling;
+                } else {
+                    // Stop if we encounter non-empty text or other elements
+                    break;
+                }
+            }
+            
+            if (commentNode) {
+                const match = commentNode.textContent.match(/words:(\d+)-(\d+)/);
+                if (match) {
+                    const startWord = parseInt(match[1]);
+                    const endWord = parseInt(match[2]);
+                    const noteTitle = h2.textContent.trim();
+                    
+                    notePositions.push({
+                        startWord,
+                        endWord,
+                        title: noteTitle,
+                        element: h2,
+                        id: `note-marker-${index}`
+                    });
+                }
+            }
+        });
+        
+        // Create timeline markers for each note
+        notePositions.forEach(note => {
+            this.addTimelineNoteMarker(note);
+        });
+        
+        console.log(`Added ${notePositions.length} note markers to timeline`);
+    }
+
+    addTimelineNoteMarker(noteData) {
+        if (this.wordCount === 0) return;
+        
+        // Calculate percentage position based on start word index
+        const percentage = (noteData.startWord / this.wordCount) * 100;
+        
+        // Create marker element
+        const marker = document.createElement('div');
+        marker.className = 'timeline-note-marker';
+        marker.dataset.noteId = noteData.id;
+        marker.dataset.startWord = noteData.startWord;
+        marker.dataset.endWord = noteData.endWord;
+        marker.style.left = `${percentage}%`;
+        marker.title = `${noteData.title} (words ${noteData.startWord}-${noteData.endWord})`;
+        
+        // Add click handler to jump to note
+        marker.addEventListener('click', (e) => {
+            e.stopPropagation();
+            console.log('Clicked note marker:', noteData.title, 'at words', noteData.startWord, '-', noteData.endWord);
+            this.jumpToNote(noteData);
+        });
+        
+        this.noteMarkers.appendChild(marker);
+    }
+
+    jumpToNote(noteData) {
+        console.log('jumpToNote called with:', noteData);
+        
+        // First, scroll to the note in the notes editor
+        if (noteData.element) {
+            console.log('Found note element:', noteData.element);
+            const noteEntry = noteData.element.closest('.note-entry');
+            
+            if (noteEntry) {
+                console.log('Found note entry:', noteEntry);
+                
+                // Get the notes editor container
+                const notesEditor = this.notesEditor;
+                
+                // Calculate position relative to the scrollable container
+                let relativeTop = 0;
+                let element = noteEntry;
+                
+                // Walk up the DOM tree to calculate the relative position within the notes editor
+                while (element && element !== notesEditor) {
+                    relativeTop += element.offsetTop;
+                    element = element.offsetParent;
+                }
+                
+                // Position the note header just below the WYSIWYG toolbar
+                const targetScrollTop = relativeTop - 10; // Small padding from top
+                
+                console.log('Note relative top:', relativeTop);
+                console.log('Target scroll position:', targetScrollTop);
+                console.log('Current scroll position:', notesEditor.scrollTop);
+                
+                // Monitor scroll completion using position checking and stagnation detection
+                const finalScrollTop = Math.max(0, targetScrollTop);
+                let scrollCompleted = false;
+                let lastScrollTop = notesEditor.scrollTop;
+                let stagnationCount = 0;
+                
+                const checkScrollCompletion = () => {
+                    if (scrollCompleted) return;
+                    
+                    const currentScrollTop = notesEditor.scrollTop;
+                    const scrollDifference = Math.abs(currentScrollTop - finalScrollTop);
+                    const scrollMovement = Math.abs(currentScrollTop - lastScrollTop);
+                    
+                    console.log('Checking scroll completion:', {
+                        current: currentScrollTop,
+                        target: finalScrollTop,
+                        difference: scrollDifference,
+                        movement: scrollMovement,
+                        stagnation: stagnationCount
+                    });
+                    
+                    // Method 1: Position-based completion (within 5px tolerance for better reliability)
+                    if (scrollDifference <= 5) {
+                        console.log('Notes editor scroll completed (position match), starting transcript highlighting');
+                        scrollCompleted = true;
+                        this.highlightNoteRange(noteData.startWord, noteData.endWord);
+                        return;
+                    }
+                    
+                    // Method 2: Stagnation detection (scroll stopped moving)
+                    if (scrollMovement < 1) {
+                        stagnationCount++;
+                        if (stagnationCount >= 3) { // 3 consecutive checks with no movement
+                            console.log('Notes editor scroll completed (stagnation detected), starting transcript highlighting');
+                            scrollCompleted = true;
+                            this.highlightNoteRange(noteData.startWord, noteData.endWord);
+                            return;
+                        }
+                    } else {
+                        stagnationCount = 0; // Reset stagnation counter if movement detected
+                    }
+                    
+                    lastScrollTop = currentScrollTop;
+                    
+                    // Continue monitoring
+                    setTimeout(checkScrollCompletion, 50);
+                };
+                
+                // Start monitoring after a brief delay to let scroll animation begin
+                setTimeout(checkScrollCompletion, 100);
+                
+                // Absolute fallback timeout
+                setTimeout(() => {
+                    if (!scrollCompleted) {
+                        console.log('Using absolute fallback timeout for scroll completion');
+                        scrollCompleted = true;
+                        this.highlightNoteRange(noteData.startWord, noteData.endWord);
+                    }
+                }, 1000);
+                
+                // Smooth scroll to the note
+                notesEditor.scrollTo({
+                    top: Math.max(0, targetScrollTop),
+                    behavior: 'smooth'
+                });
+                
+                // Temporarily highlight the note
+                noteEntry.classList.add('highlighted');
+                setTimeout(() => {
+                    noteEntry.classList.remove('highlighted');
+                }, 2000);
+            } else {
+                console.log('No note entry found for element');
+            }
+        } else {
+            console.log('No element found in noteData');
+            // If no notes editor scroll needed, go straight to transcript
+            this.highlightNoteRange(noteData.startWord, noteData.endWord);
         }
     }
 
@@ -827,6 +1023,8 @@ class RendererApp {
     }
 
     highlightNoteRange(startWord, endWord) {
+        console.log('highlightNoteRange called for words:', startWord, '-', endWord);
+        
         // Update selection state
         this.selectedRange.start = startWord;
         this.selectedRange.end = endWord;
@@ -844,11 +1042,14 @@ class RendererApp {
         // Scroll to the selection in transcript
         const firstSelectedWord = document.querySelector(`[data-word-index="${startWord}"]`);
         if (firstSelectedWord) {
+            console.log('Scrolling to transcript word:', startWord);
             firstSelectedWord.scrollIntoView({ 
                 behavior: 'smooth', 
                 block: 'center',
                 inline: 'nearest'
             });
+        } else {
+            console.log('Could not find word element for index:', startWord);
         }
     }
 
@@ -883,6 +1084,9 @@ class RendererApp {
         
         // Setup click handlers for new notes
         this.setupNoteClickHandlers();
+        
+        // Extract and update timeline markers for all notes
+        this.extractAndDisplayNoteMarkers();
     }
 
     highlightNote(noteId) {

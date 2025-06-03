@@ -74,9 +74,14 @@ class TranscriptSummarizer {
 
     loadOrCreateNotesFile() {
         if (!fs.existsSync(this.notesFilePath)) {
-            // Create blank notes file
-            fs.writeFileSync(this.notesFilePath, '', 'utf8');
-            console.log(`📝 Created blank notes file: ${this.notesFilePath}`);
+            // Create formatted notes file with header
+            const transcriptBasename = path.basename(this.filePath, path.extname(this.filePath));
+            const today = new Date().toISOString().split('T')[0]; // yyyy-mm-dd format
+            
+            const initialContent = `# ${transcriptBasename} - ${today}\n\n`;
+            
+            fs.writeFileSync(this.notesFilePath, initialContent, 'utf8');
+            console.log(`📝 Created formatted notes file: ${this.notesFilePath}`);
         } else {
             console.log(`📝 Notes file available: ${this.notesFilePath}`);
         }
@@ -215,7 +220,7 @@ class TranscriptSummarizer {
         fs.writeFileSync(this.summaryFilePath, this.currentSummary, 'utf8');
     }
 
-    saveNote(note) {
+    saveNote(note, startWordIndex = null, endWordIndex = null, noteHeader = null) {
         const now = new Date();
         const timestamp = now.getFullYear() + '-' + 
                          String(now.getMonth() + 1).padStart(2, '0') + '-' + 
@@ -223,11 +228,24 @@ class TranscriptSummarizer {
                          String(now.getHours()).padStart(2, '0') + ':' + 
                          String(now.getMinutes()).padStart(2, '0') + ':' + 
                          String(now.getSeconds()).padStart(2, '0');
-        const noteEntry = `[${timestamp}] ${note}\n\n`;
+        
+        // Create H2 header with word indices if provided
+        let noteEntry = '';
+        if (noteHeader) {
+            noteEntry += `## ${noteHeader}`;
+            if (startWordIndex !== null && endWordIndex !== null) {
+                noteEntry += ` <!-- words:${startWordIndex}-${endWordIndex} -->`;
+            }
+            noteEntry += `\n\n${note}\n\n`;
+        } else {
+            // Legacy format for backward compatibility
+            noteEntry = `[${timestamp}] ${note}\n\n`;
+        }
+        
         fs.appendFileSync(this.notesFilePath, noteEntry, 'utf8');
     }
 
-    async createNote(noteRequest, forceTextOnly = false) {
+    async createNote(noteRequest, forceTextOnly = false, startWordIndex = null, endWordIndex = null) {
         try {
             // Get the active transcript (compressed if available)
             const fullTranscript = this.getActiveTranscript();
@@ -237,15 +255,23 @@ class TranscriptSummarizer {
                 return;
             }
 
-            // Apply context limit if set
-            const limitedTranscript = this.getLimitedTranscript(fullTranscript);
+            // Use selected word range if provided, otherwise use full transcript
+            let contextTranscript = fullTranscript;
+            if (startWordIndex !== null && endWordIndex !== null) {
+                contextTranscript = this.extractWordRange(fullTranscript, startWordIndex, endWordIndex);
+                console.log(`Using selected word range ${startWordIndex}-${endWordIndex} for note context`);
+            } else {
+                // Apply context limit if set and no specific range selected
+                contextTranscript = this.getLimitedTranscript(fullTranscript);
+                console.log('Using full transcript for note context');
+            }
 
             const messages = [];
 
             let promptText = `You are an AI assistant helping create concise meeting notes for a SOFTWARE SOLUTION ARCHITECT. You have access to the meeting transcript and are asked to create a brief note about a specific topic.
 
 MEETING TRANSCRIPT:
-${limitedTranscript}
+${contextTranscript}
 
 NOTE REQUEST:
 ${noteRequest}
@@ -257,8 +283,9 @@ INSTRUCTIONS:
 - If the topic isn't discussed in the transcript, state that clearly
 - Keep it concise - this is a quick note, not a full analysis
 - IMPORTANT: Write the note in the same language as the note request - if the request is in Finnish, respond in Finnish; if in English, respond in English
+- DO NOT include any headers, titles, or formatting - just provide the note content as the header will be added automatically
 
-Brief note:`;
+Brief note content:`;
 
             // Add text content
             const content = [{ type: 'text', text: promptText }];
@@ -299,7 +326,7 @@ Brief note:`;
             const requestCost = this.calculateCost(inputTokens, outputTokens);
 
             const noteContent = message.content[0].text;
-            this.saveNote(`NOTE: ${noteRequest}\n\n${noteContent}`);
+            this.saveNote(noteContent, startWordIndex, endWordIndex, noteRequest);
             
             this.displayCostReport(requestCost, inputTokens, outputTokens);
 
@@ -307,6 +334,68 @@ Brief note:`;
 
         } catch (error) {
             console.error('Error creating note:', error.message);
+            return null;
+        }
+    }
+
+    async createNoteFromScreenshotsOnly(noteRequest, startWordIndex = null, endWordIndex = null) {
+        try {
+            if (this.selectedScreenshots.length === 0) {
+                console.log('⚠️  No screenshots selected for screenshot-only note');
+                return;
+            }
+
+            const messages = [];
+            const content = [];
+
+            // Add note request text
+            content.push({
+                type: 'text',
+                text: `Create a brief note about: ${noteRequest}\n\nAnalyze the provided screenshots and create concise notes based on what you see. Focus on the specific topic requested. Provide a clear, actionable summary.\n\nIMPORTANT: Do NOT include any headers, titles, or formatting - just provide the note content as the header will be added automatically.`
+            });
+
+            // Add selected screenshots
+            for (const screenshotPath of this.selectedScreenshots) {
+                try {
+                    const imageData = fs.readFileSync(screenshotPath);
+                    const base64Image = imageData.toString('base64');
+                    const fileExtension = path.extname(screenshotPath).toLowerCase().substring(1);
+                    const mimeType = fileExtension === 'jpg' ? 'jpeg' : fileExtension;
+                    
+                    content.push({
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: `image/${mimeType}`,
+                            data: base64Image
+                        }
+                    });
+                } catch (error) {
+                    console.log(`⚠️  Could not read screenshot ${screenshotPath}:`, error.message);
+                }
+            }
+
+            messages.push({ role: 'user', content });
+
+            const message = await this.anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 800,
+                messages
+            });
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+
+            const noteContent = message.content[0].text;
+            this.saveNote(noteContent, startWordIndex, endWordIndex, noteRequest);
+            
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+            return noteContent;
+
+        } catch (error) {
+            console.error('Error creating screenshot-only note:', error.message);
             return null;
         }
     }
@@ -397,7 +486,6 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
     getActiveTranscript() {
         // Get the transcript to use for AI operations (compressed if available and active)
         if (this.useCompressed && this.compressedTranscript) {
-            const newContent = fs.readFileSync(this.filePath, 'utf8');
             // Append any new content since compression to the compressed version
             return this.compressedTranscript + '\n' + this.pendingContent;
         } else {
@@ -418,6 +506,22 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
         // Take the last N words (tail)
         const limitedWords = words.slice(-this.contextWordLimit);
         return limitedWords.join(' ');
+    }
+
+    extractWordRange(fullTranscript, startWordIndex, endWordIndex) {
+        // Extract specific word range from transcript
+        const words = fullTranscript.trim().split(/\s+/);
+        
+        if (startWordIndex < 0 || endWordIndex >= words.length || startWordIndex > endWordIndex) {
+            console.log(`⚠️  Invalid word range: ${startWordIndex}-${endWordIndex} (transcript has ${words.length} words)`);
+            return fullTranscript; // Fallback to full transcript
+        }
+
+        const selectedWords = words.slice(startWordIndex, endWordIndex + 1);
+        const extractedText = selectedWords.join(' ');
+        
+        console.log(`Extracted ${selectedWords.length} words from transcript for note context`);
+        return extractedText;
     }
 
     // Add other essential methods as needed...

@@ -526,6 +526,28 @@ body {
     color: #333;
 }
 
+.notes-editor h2[style*="cursor: pointer"],
+.notes-editor h2.clickable-note-header {
+    color: #0066cc;
+    cursor: pointer;
+    text-decoration: underline;
+    transition: color 0.2s ease;
+}
+
+.notes-editor h2[style*="cursor: pointer"]:hover,
+.notes-editor h2.clickable-note-header:hover {
+    color: #004499;
+}
+
+.notes-editor h3[style*="cursor: pointer"] {
+    color: #0066cc;
+    transition: color 0.2s ease;
+}
+
+.notes-editor h3[style*="cursor: pointer"]:hover {
+    color: #004499;
+}
+
 .notes-editor h4 {
     font-size: 16px;
     font-weight: 600;

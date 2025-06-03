@@ -246,7 +246,7 @@ class ElectronTranscriptApp {
 
         ipcMain.handle('generate-note', async (_, noteData) => {
             if (this.summarizer) {
-                const { header, mode, selectedScreenshots, sessionContext } = noteData;
+                const { header, mode, selectedScreenshots, sessionContext, startWordIndex, endWordIndex } = noteData;
                 
                 // Update summarizer's selected screenshots
                 this.summarizer.selectedScreenshots = selectedScreenshots;
@@ -258,11 +258,11 @@ class ElectronTranscriptApp {
 
                 switch (mode) {
                     case 'text-only':
-                        return await this.summarizer.createNote(header, true);
+                        return await this.summarizer.createNote(header, true, startWordIndex, endWordIndex);
                     case 'screenshots-only':
-                        return await this.summarizer.createNoteFromScreenshotsOnly(header);
+                        return await this.summarizer.createNoteFromScreenshotsOnly(header, startWordIndex, endWordIndex);
                     default:
-                        return await this.summarizer.createNote(header);
+                        return await this.summarizer.createNote(header, false, startWordIndex, endWordIndex);
                 }
             }
         });
@@ -367,14 +367,26 @@ class ElectronTranscriptApp {
         // Renderer ready signal
         ipcMain.handle('renderer-ready', () => {
             console.log('Renderer process ready');
+            
+            // Show window if not visible
             if (this.mainWindow && !this.mainWindow.isVisible()) {
                 console.log('Showing window now that renderer is ready');
                 this.mainWindow.show();
                 this.mainWindow.focus();
-                
-                // Initialize summarizer now that UI is ready
-                if (this.appSettings.transcriptFile) {
+            }
+            
+            // Always re-initialize data when renderer is ready (handles refresh case)
+            if (this.appSettings.transcriptFile) {
+                if (!this.summarizer) {
+                    console.log('Initializing summarizer for the first time');
                     this.initializeSummarizer();
+                } else {
+                    console.log('Re-sending data to refreshed renderer');
+                    // Re-send all data to the refreshed renderer
+                    this.sendToRenderer('status-update', { connected: true });
+                    this.sendScreenshotsUpdate();
+                    this.sendAppDataUpdate();
+                    this.sendExistingTranscriptContent();
                 }
             }
         });
@@ -455,18 +467,34 @@ class ElectronTranscriptApp {
         // Enhanced Markdown to HTML conversion for WYSIWYG editing
         let html = markdown;
         
-        // Escape HTML entities first
+        // Store and temporarily replace HTML comments to protect them from escaping
+        const comments = [];
+        html = html.replace(/<!--.*?-->/g, (match) => {
+            const placeholder = `__COMMENT_${comments.length}__`;
+            comments.push(match);
+            return placeholder;
+        });
+        
+        // Escape HTML entities for content safety
         html = html
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
         
-        // Process headings
+        // Process headings (with comment placeholders)
         html = html
             .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
             .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-            .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+            .replace(/^## (.+?)(\s*__COMMENT_\d+__)?$/gm, (match, headerText, commentPlaceholder) => {
+                return `<h2>${headerText}</h2>${commentPlaceholder || ''}`;
+            })
             .replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        
+        // Restore HTML comments
+        comments.forEach((comment, index) => {
+            html = html.replace(`__COMMENT_${index}__`, comment);
+        });
+        
         
         // Process inline formatting (bold and italic)
         html = html
@@ -512,6 +540,17 @@ class ElectronTranscriptApp {
                 if (content.match(/^<h[1-6]>/)) {
                     return content; // Already a heading
                 } else if (content) {
+                    // Check if content starts with an HTML comment - handle specially
+                    if (content.match(/^<!--.*?-->/)) {
+                        // Split comment from the rest of the content
+                        const match = content.match(/^(<!--.*?-->)\s*(.*)/s);
+                        if (match) {
+                            const comment = match[1];
+                            const restContent = match[2].trim();
+                            return comment + (restContent ? `<p>${restContent}</p>` : '');
+                        }
+                        return content; // Fallback
+                    }
                     return `<p>${content}</p>`;
                 }
                 return '';
@@ -525,10 +564,10 @@ class ElectronTranscriptApp {
         // Enhanced HTML to Markdown conversion with proper list handling
         let markdown = html;
         
-        // Convert headings
+        // Convert headings (preserve word index comments for H2)
         markdown = markdown
             .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
-            .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+            .replace(/<h2[^>]*>(.*?)<\/h2>(<!--.*?-->)?/gi, '## $1$2\n\n')
             .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
             .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n');
         
@@ -561,8 +600,21 @@ class ElectronTranscriptApp {
             .replace(/<div[^>]*>(.*?)<\/div>/gi, '$1\n')
             .replace(/<br[^>]*>/gi, '\n');
         
+        // Preserve HTML comments with word indices before removing other tags
+        const wordIndexComments = [];
+        markdown = markdown.replace(/<!--\s*words:(\d+)-(\d+)\s*-->/g, (match, start, end) => {
+            const placeholder = `__WORD_INDEX_${wordIndexComments.length}__`;
+            wordIndexComments.push(match);
+            return placeholder;
+        });
+        
         // Remove any remaining HTML tags
         markdown = markdown.replace(/<[^>]*>/g, '');
+        
+        // Restore word index comments
+        wordIndexComments.forEach((comment, index) => {
+            markdown = markdown.replace(`__WORD_INDEX_${index}__`, comment);
+        });
         
         // Decode HTML entities
         markdown = markdown
@@ -716,13 +768,59 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
     }
 
     // Override note creation to send updates to UI
-    async createNote(noteRequest, forceTextOnly = false) {
-        const result = await super.createNote(noteRequest, forceTextOnly);
+    async createNote(noteRequest, forceTextOnly = false, startWordIndex = null, endWordIndex = null) {
+        const result = await super.createNote(noteRequest, forceTextOnly, startWordIndex, endWordIndex);
         
         if (this.electronApp) {
-            // Send note created event
+            // Create the properly formatted note content with H2 header and word indices
+            let formattedContent = '';
+            if (noteRequest) {
+                formattedContent += `## ${noteRequest}`;
+                if (startWordIndex !== null && endWordIndex !== null) {
+                    formattedContent += ` <!-- words:${startWordIndex}-${endWordIndex} -->`;
+                }
+                formattedContent += `\n\n${result || ''}`;
+            } else {
+                formattedContent = result || noteRequest;
+            }
+            
+            // Convert markdown to HTML for proper display in WYSIWYG editor
+            const htmlContent = this.electronApp.markdownToHtml(formattedContent);
+            
+            // Send note created event with HTML content
             this.electronApp.sendNoteCreated({
-                content: result || noteRequest,
+                content: htmlContent,
+                position: this.lastPosition,
+                id: Date.now().toString()
+            });
+        }
+        
+        return result;
+    }
+
+    // Override screenshot-only note creation to send updates to UI
+    async createNoteFromScreenshotsOnly(noteRequest, startWordIndex = null, endWordIndex = null) {
+        const result = await super.createNoteFromScreenshotsOnly(noteRequest, startWordIndex, endWordIndex);
+        
+        if (this.electronApp) {
+            // Create the properly formatted note content with H2 header and word indices
+            let formattedContent = '';
+            if (noteRequest) {
+                formattedContent += `## ${noteRequest}`;
+                if (startWordIndex !== null && endWordIndex !== null) {
+                    formattedContent += ` <!-- words:${startWordIndex}-${endWordIndex} -->`;
+                }
+                formattedContent += `\n\n${result || ''}`;
+            } else {
+                formattedContent = result || noteRequest;
+            }
+            
+            // Convert markdown to HTML for proper display in WYSIWYG editor
+            const htmlContent = this.electronApp.markdownToHtml(formattedContent);
+            
+            // Send note created event with HTML content
+            this.electronApp.sendNoteCreated({
+                content: htmlContent,
                 position: this.lastPosition,
                 id: Date.now().toString()
             });

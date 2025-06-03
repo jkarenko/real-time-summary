@@ -21,6 +21,7 @@ class RendererApp {
             end: null,
             active: false
         };
+        this.notesLoaded = false; // Flag to prevent autosave until notes are loaded
         
         console.log('Initializing elements...');
         this.initializeElements();
@@ -155,12 +156,8 @@ class RendererApp {
         // Prevent context menu on timeline for better UX
         this.timeline.addEventListener('contextmenu', (e) => e.preventDefault());
         
-        // Clear selection when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('.transcript-line') && !e.target.closest('.timeline') && !e.target.closest('.word')) {
-                this.clearSelection();
-            }
-        });
+        // Only clear selection when explicitly requested (not on outside clicks)
+        // Selection should persist until a new selection is made or explicitly cleared
     }
 
     setupIPC() {
@@ -439,6 +436,7 @@ class RendererApp {
                 const startPercent = (Math.min(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
                 const endPercent = (Math.max(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
                 this.updateTimelineSelectionFromPercent(startPercent, endPercent);
+                this.updateSelectionStatus();
                 
                 // Send selection to main process
                 if (window.electronAPI) {
@@ -489,7 +487,9 @@ class RendererApp {
         
         this.selectedRange.start = startWord;
         this.selectedRange.end = endWord;
+        this.selectedRange.active = false;
         this.updateTranscriptVisualSelection();
+        this.updateSelectionStatus();
     }
 
     updateTimelineSelectionFromPercent(startPercent, endPercent) {
@@ -499,10 +499,15 @@ class RendererApp {
     }
 
     setSelection(startPercent, endPercent) {
-        this.selectedRange.start = Math.floor((startPercent / 100) * this.wordCount);
-        this.selectedRange.end = Math.floor((endPercent / 100) * this.wordCount);
+        // Convert percentages to word indices and set selection
+        const startWord = Math.floor((startPercent / 100) * this.wordCount);
+        const endWord = Math.floor((endPercent / 100) * this.wordCount);
+        
+        this.selectedRange.start = startWord;
+        this.selectedRange.end = endWord;
         this.selectedRange.active = false;
         this.updateTranscriptVisualSelection();
+        this.updateSelectionStatus();
     }
 
     clearSelection() {
@@ -511,6 +516,28 @@ class RendererApp {
         this.selectedRange.active = false;
         this.selectionArea.style.display = 'none';
         this.updateTranscriptVisualSelection();
+        this.updateSelectionStatus();
+    }
+
+    updateSelectionStatus() {
+        // Update UI to show current selection status for note context
+        const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
+        
+        if (hasSelection) {
+            const wordCount = Math.abs(this.selectedRange.end - this.selectedRange.start) + 1;
+            const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
+            const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
+            
+            // Update note header placeholder to show context
+            if (this.noteHeaderInput) {
+                this.noteHeaderInput.placeholder = `Note about selection (${wordCount} words: ${startWord}-${endWord})`;
+            }
+        } else {
+            // Reset to default placeholder
+            if (this.noteHeaderInput) {
+                this.noteHeaderInput.placeholder = 'e.g., Architecture Decisions, Action Items...';
+            }
+        }
     }
 
     addNoteMarker(position, noteId) {
@@ -541,12 +568,26 @@ class RendererApp {
             return;
         }
 
+        // Use selected range if available, otherwise use full transcript
+        let startWordIndex = null;
+        let endWordIndex = null;
+        
+        if (this.selectedRange.start !== null && this.selectedRange.end !== null) {
+            startWordIndex = Math.min(this.selectedRange.start, this.selectedRange.end);
+            endWordIndex = Math.max(this.selectedRange.start, this.selectedRange.end);
+            
+            // Show user feedback about selected context
+            const wordCount = endWordIndex - startWordIndex + 1;
+        }
+
         const noteData = {
             header,
             sessionContext,
             mode, // 'normal', 'text-only', 'screenshots-only'
             selectedScreenshots: Array.from(this.selectedScreenshots),
-            timelinePosition: this.currentPosition
+            timelinePosition: this.currentPosition,
+            startWordIndex,
+            endWordIndex
         };
 
         // Send note generation request to main process
@@ -564,7 +605,35 @@ class RendererApp {
             if (window.electronAPI) {
                 const notesContent = await window.electronAPI.loadNotes();
                 if (notesContent) {
-                    this.notesEditor.innerHTML = notesContent;
+                    // Split the content by H2 headers to create individual note entries
+                    const noteBlocks = notesContent.split(/(?=<h2>)/);
+                    
+                    // Clear the editor
+                    this.notesEditor.innerHTML = '';
+                    
+                    // Process each note block
+                    noteBlocks.forEach((block, index) => {
+                        const trimmedBlock = block.trim();
+                        if (trimmedBlock) {
+                            // Create a note entry wrapper for each block
+                            const noteElement = document.createElement('div');
+                            noteElement.className = 'note-entry';
+                            noteElement.dataset.noteId = `loaded-note-${index}`;
+                            noteElement.innerHTML = trimmedBlock;
+                            
+                            this.notesEditor.appendChild(noteElement);
+                        }
+                    });
+                    
+                    // Add a small delay to ensure DOM is fully updated
+                    setTimeout(() => {
+                        this.setupNoteClickHandlers();
+                        // Enable autosave now that notes are loaded
+                        this.notesLoaded = true;
+                    }, 100);
+                } else {
+                    // No existing notes, but still enable autosave
+                    this.notesLoaded = true;
                 }
             }
         } catch (error) {
@@ -572,20 +641,83 @@ class RendererApp {
         }
     }
 
+    setupNoteClickHandlers() {
+        // Make H2 headers with word indices clickable
+        const h2Elements = this.notesEditor.querySelectorAll('h2');
+        h2Elements.forEach(h2 => {
+            // Look for a word index comment after the h2 (might have text nodes in between)
+            let nextNode = h2.nextSibling;
+            let commentNode = null;
+            
+            // Search through the next few siblings to find the comment node
+            while (nextNode && !commentNode) {
+                if (nextNode.nodeType === Node.COMMENT_NODE) {
+                    commentNode = nextNode;
+                    break;
+                } else if (nextNode.nodeType === Node.TEXT_NODE && nextNode.textContent.trim() === '') {
+                    // Skip empty text nodes (spaces/whitespace)
+                    nextNode = nextNode.nextSibling;
+                } else {
+                    // Stop if we encounter non-empty text or other elements
+                    break;
+                }
+            }
+            
+            if (commentNode) {
+                const match = commentNode.textContent.match(/words:(\d+)-(\d+)/);
+                if (match) {
+                    const startWord = parseInt(match[1]);
+                    const endWord = parseInt(match[2]);
+                    
+                    // Make h2 clickable with both inline styles and CSS class
+                    h2.style.cursor = 'pointer';
+                    h2.style.textDecoration = 'underline';
+                    h2.classList.add('clickable-note-header');
+                    h2.title = `Click to highlight words ${startWord}-${endWord} in transcript`;
+                    
+                    
+                    h2.addEventListener('click', () => {
+                        this.highlightNoteRange(startWord, endWord);
+                    });
+                }
+            }
+        });
+    }
+
+    highlightNoteRange(startWord, endWord) {
+        // Update selection state
+        this.selectedRange.start = startWord;
+        this.selectedRange.end = endWord;
+        this.selectedRange.active = false;
+        
+        // Highlight in transcript
+        this.updateTranscriptVisualSelection();
+        this.updateSelectionStatus();
+        
+        // Update timeline selection
+        const startPercent = (startWord / this.wordCount) * 100;
+        const endPercent = (endWord / this.wordCount) * 100;
+        this.updateTimelineSelectionFromPercent(startPercent, endPercent);
+        
+        // Scroll to the selection in transcript
+        const firstSelectedWord = document.querySelector(`[data-word-index="${startWord}"]`);
+        if (firstSelectedWord) {
+            firstSelectedWord.scrollIntoView({ 
+                behavior: 'smooth', 
+                block: 'center',
+                inline: 'nearest'
+            });
+        }
+    }
+
     handleNoteCreated(noteData) {
         const { content, position, id } = noteData;
         
-        // Convert line breaks to HTML for proper display in contenteditable
-        const htmlContent = content
-            .replace(/\n\n/g, '</p><p>') // Double line breaks become paragraph breaks
-            .replace(/\n/g, '<br>') // Single line breaks become <br> tags
-            .replace(/^\s*/, '<p>') // Add opening paragraph tag
-            .replace(/\s*$/, '</p>'); // Add closing paragraph tag
-        
+        // Content is already HTML from the main process, just insert it
         const noteElement = document.createElement('div');
         noteElement.className = 'note-entry';
         noteElement.dataset.noteId = id;
-        noteElement.innerHTML = htmlContent;
+        noteElement.innerHTML = content;
         
         // Add note to editor (append to existing content)
         this.notesEditor.appendChild(noteElement);
@@ -603,6 +735,12 @@ class RendererApp {
         
         // Save immediately after adding a generated note
         this.saveNotes();
+        
+        // Enable autosave if not already enabled
+        this.notesLoaded = true;
+        
+        // Setup click handlers for new notes
+        this.setupNoteClickHandlers();
     }
 
     highlightNote(noteId) {
@@ -623,6 +761,11 @@ class RendererApp {
     }
 
     handleNotesChange() {
+        // Don't autosave until notes are properly loaded to prevent wiping on refresh
+        if (!this.notesLoaded) {
+            return;
+        }
+        
         // Clear any existing autosave timeout
         clearTimeout(this.autoSaveTimeout);
         
@@ -850,6 +993,12 @@ class RendererApp {
         
         if (e.key === 'Escape') {
             this.hideSettings();
+            this.clearSelection();
+        }
+        
+        // Clear selection with Delete key for better UX
+        if (e.key === 'Delete' && (e.target.closest('.transcript-content') || e.target.closest('.timeline'))) {
+            e.preventDefault();
             this.clearSelection();
         }
     }

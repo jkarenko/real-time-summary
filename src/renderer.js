@@ -16,6 +16,11 @@ class RendererApp {
             readOnlyMode: true,
             autoSave: true
         };
+        this.selectedRange = {
+            start: null,
+            end: null,
+            active: false
+        };
         
         console.log('Initializing elements...');
         this.initializeElements();
@@ -149,6 +154,13 @@ class RendererApp {
 
         // Prevent context menu on timeline for better UX
         this.timeline.addEventListener('contextmenu', (e) => e.preventDefault());
+        
+        // Clear selection when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.transcript-line') && !e.target.closest('.timeline') && !e.target.closest('.word')) {
+                this.clearSelection();
+            }
+        });
     }
 
     setupIPC() {
@@ -170,8 +182,12 @@ class RendererApp {
         const { lines, wordCount, currentPosition } = data;
         
         // Add new lines with animation
-        lines.forEach(line => {
+        lines.forEach((line, index) => {
             if (!this.transcriptLines.find(l => l.timestamp === line.timestamp)) {
+                // Add word position information for selection
+                line.wordIndex = this.transcriptLines.reduce((acc, curr) => acc + curr.content.split(/\s+/).length, 0);
+                line.wordCount = line.content.split(/\s+/).length;
+                
                 this.transcriptLines.push(line);
                 this.addTranscriptLine(line, true); // true for animation
             }
@@ -186,12 +202,37 @@ class RendererApp {
     addTranscriptLine(line, animate = false) {
         const lineElement = document.createElement('div');
         lineElement.className = `transcript-line ${animate ? 'new' : ''}`;
+        lineElement.dataset.wordIndex = line.wordIndex;
+        lineElement.dataset.wordCount = line.wordCount;
+        
+        // Create word-by-word content for granular selection
+        const words = line.content.split(/\s+/);
+        const contentSpan = document.createElement('span');
+        contentSpan.className = 'transcript-content-text';
+        
+        words.forEach((word, index) => {
+            const wordSpan = document.createElement('span');
+            wordSpan.className = 'word';
+            wordSpan.dataset.wordIndex = line.wordIndex + index;
+            wordSpan.textContent = word;
+            
+            // Add selection event listeners to each word
+            wordSpan.addEventListener('mousedown', (e) => this.startTranscriptSelection(e, line.wordIndex + index));
+            wordSpan.addEventListener('mouseenter', (e) => this.handleTranscriptSelectionMove(e, line.wordIndex + index));
+            
+            contentSpan.appendChild(wordSpan);
+            
+            // Add space after word (except for last word)
+            if (index < words.length - 1) {
+                contentSpan.appendChild(document.createTextNode(' '));
+            }
+        });
         
         lineElement.innerHTML = `
             <span class="transcript-timestamp">[${line.timestamp}]</span>
             <span class="transcript-speaker">${line.speaker}:</span>
-            <span class="transcript-content-text">${line.content}</span>
         `;
+        lineElement.appendChild(contentSpan);
 
         this.transcriptContent.appendChild(lineElement);
         
@@ -274,8 +315,15 @@ class RendererApp {
     updateTimeline() {
         if (this.wordCount === 0) return;
         
-        // Update cursor position (percentage of total words)
-        const percentage = Math.min((this.currentPosition / this.wordCount) * 100, 100);
+        // Calculate current word position based on loaded transcript lines
+        let currentWordPosition = 0;
+        if (this.transcriptLines.length > 0) {
+            const lastLine = this.transcriptLines[this.transcriptLines.length - 1];
+            currentWordPosition = lastLine.wordIndex + lastLine.wordCount;
+        }
+        
+        // Update cursor position (percentage of current words loaded vs total)
+        const percentage = Math.min((currentWordPosition / this.wordCount) * 100, 100);
         this.timelineCursor.style.left = `${percentage}%`;
     }
 
@@ -283,11 +331,42 @@ class RendererApp {
         const rect = this.timeline.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const percentage = (x / rect.width) * 100;
-        const targetPosition = Math.floor((percentage / 100) * this.wordCount);
+        const targetWordPosition = Math.floor((percentage / 100) * this.wordCount);
+        
+        // Update cursor position visually
+        this.timelineCursor.style.left = `${percentage}%`;
+        
+        // Highlight the corresponding word in transcript
+        this.highlightWordAtPosition(targetWordPosition);
         
         // Send timeline seek to main process
         if (window.electronAPI) {
-            window.electronAPI.seekTimeline(targetPosition);
+            window.electronAPI.seekTimeline(targetWordPosition);
+        }
+    }
+
+    highlightWordAtPosition(wordPosition) {
+        // Clear existing highlights
+        document.querySelectorAll('.word.cursor-highlight').forEach(el => {
+            el.classList.remove('cursor-highlight');
+        });
+        
+        // Find and highlight the word at the target position
+        const targetWord = document.querySelector(`[data-word-index="${wordPosition}"]`);
+        if (targetWord) {
+            targetWord.classList.add('cursor-highlight');
+            
+            // Scroll to the word
+            targetWord.scrollIntoView({ 
+                behavior: 'smooth', 
+                block: 'center',
+                inline: 'nearest'
+            });
+            
+            // Remove highlight after 2 seconds
+            setTimeout(() => {
+                targetWord.classList.remove('cursor-highlight');
+            }, 2000);
         }
     }
 
@@ -307,6 +386,11 @@ class RendererApp {
             this.selectionArea.style.left = `${(left / rect.width) * 100}%`;
             this.selectionArea.style.width = `${(width / rect.width) * 100}%`;
             this.selectionArea.style.display = 'block';
+            
+            // Update transcript selection to match timeline
+            const startPercent = (left / rect.width) * 100;
+            const endPercent = ((left + width) / rect.width) * 100;
+            this.updateTranscriptSelectionFromPercent(startPercent, endPercent);
         };
         
         const handleMouseUp = () => {
@@ -322,17 +406,111 @@ class RendererApp {
                 const startPercent = ((selectionRect.left - timelineRect.left) / timelineRect.width) * 100;
                 const endPercent = ((selectionRect.right - timelineRect.left) / timelineRect.width) * 100;
                 
+                // Update internal selection state
+                this.setSelection(startPercent, endPercent);
+                
                 // Send selection to main process
                 if (window.electronAPI) {
                     window.electronAPI.selectTimelineRange(startPercent, endPercent);
                 }
             } else {
-                this.selectionArea.style.display = 'none';
+                this.clearSelection();
             }
         };
         
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    startTranscriptSelection(e, wordIndex) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        this.selectedRange.start = wordIndex;
+        this.selectedRange.end = wordIndex;
+        this.selectedRange.active = true;
+        
+        const handleMouseUp = () => {
+            this.selectedRange.active = false;
+            document.removeEventListener('mouseup', handleMouseUp);
+            
+            if (this.selectedRange.start !== null && this.selectedRange.end !== null) {
+                // Convert word indices to percentages and update timeline
+                const startPercent = (Math.min(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
+                const endPercent = (Math.max(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
+                this.updateTimelineSelectionFromPercent(startPercent, endPercent);
+                
+                // Send selection to main process
+                if (window.electronAPI) {
+                    window.electronAPI.selectTimelineRange(startPercent, endPercent);
+                }
+            }
+        };
+        
+        document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    handleTranscriptSelectionMove(e, wordIndex) {
+        if (this.selectedRange.active && this.selectedRange.start !== null) {
+            this.selectedRange.end = wordIndex;
+            this.updateTranscriptVisualSelection();
+            
+            // Update timeline selection in real-time
+            const startPercent = (Math.min(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
+            const endPercent = (Math.max(this.selectedRange.start, this.selectedRange.end) / this.wordCount) * 100;
+            this.updateTimelineSelectionFromPercent(startPercent, endPercent);
+        }
+    }
+
+    updateTranscriptVisualSelection() {
+        // Clear existing selection
+        document.querySelectorAll('.word.selected').forEach(el => {
+            el.classList.remove('selected');
+        });
+        
+        if (this.selectedRange.start === null || this.selectedRange.end === null) return;
+        
+        const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
+        const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
+        
+        // Highlight individual words that fall within the selection
+        document.querySelectorAll('.word').forEach(wordEl => {
+            const wordIndex = parseInt(wordEl.dataset.wordIndex);
+            
+            if (wordIndex >= startWord && wordIndex <= endWord) {
+                wordEl.classList.add('selected');
+            }
+        });
+    }
+
+    updateTranscriptSelectionFromPercent(startPercent, endPercent) {
+        const startWord = Math.floor((startPercent / 100) * this.wordCount);
+        const endWord = Math.floor((endPercent / 100) * this.wordCount);
+        
+        this.selectedRange.start = startWord;
+        this.selectedRange.end = endWord;
+        this.updateTranscriptVisualSelection();
+    }
+
+    updateTimelineSelectionFromPercent(startPercent, endPercent) {
+        this.selectionArea.style.left = `${startPercent}%`;
+        this.selectionArea.style.width = `${endPercent - startPercent}%`;
+        this.selectionArea.style.display = 'block';
+    }
+
+    setSelection(startPercent, endPercent) {
+        this.selectedRange.start = Math.floor((startPercent / 100) * this.wordCount);
+        this.selectedRange.end = Math.floor((endPercent / 100) * this.wordCount);
+        this.selectedRange.active = false;
+        this.updateTranscriptVisualSelection();
+    }
+
+    clearSelection() {
+        this.selectedRange.start = null;
+        this.selectedRange.end = null;
+        this.selectedRange.active = false;
+        this.selectionArea.style.display = 'none';
+        this.updateTranscriptVisualSelection();
     }
 
     addNoteMarker(position, noteId) {
@@ -672,6 +850,7 @@ class RendererApp {
         
         if (e.key === 'Escape') {
             this.hideSettings();
+            this.clearSelection();
         }
     }
 

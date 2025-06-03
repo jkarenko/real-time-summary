@@ -113,6 +113,49 @@ body {
 .transcript-line {
     margin-bottom: 8px;
     padding: 4px 0;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s ease;
+    border-left: 3px solid transparent;
+    padding-left: 16px;
+}
+
+.transcript-line:hover {
+    background: rgba(0, 102, 204, 0.05);
+}
+
+.transcript-line.selected {
+    background: rgba(0, 102, 204, 0.15);
+    border-left-color: #0066cc;
+}
+
+.word {
+    display: inline;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 2px;
+    transition: background-color 0.15s ease;
+}
+
+.word:hover {
+    background: rgba(0, 102, 204, 0.08);
+}
+
+.word.selected {
+    background: rgba(0, 102, 204, 0.25);
+    color: #003d82;
+}
+
+.word.cursor-highlight {
+    background: rgba(255, 193, 7, 0.4);
+    color: #856404;
+    animation: cursor-pulse 0.5s ease-in-out;
+}
+
+@keyframes cursor-pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
 }
 
 .transcript-timestamp {

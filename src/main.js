@@ -11,6 +11,7 @@ class ElectronTranscriptApp {
     constructor() {
         this.mainWindow = null;
         this.summarizer = null;
+        this.currentScreenshotFilter = 'session'; // Track current filter state
         this.appSettings = {
             transcriptFile: '',
             screenshotsDir: '',
@@ -274,7 +275,8 @@ class ElectronTranscriptApp {
         });
 
         ipcMain.handle('set-screenshot-filter', (_, filter) => {
-            // Update screenshot list based on filter
+            // Update current filter state and screenshot list
+            this.currentScreenshotFilter = filter;
             this.sendScreenshotsUpdate(filter);
         });
 
@@ -406,10 +408,13 @@ class ElectronTranscriptApp {
         });
     }
 
-    sendScreenshotsUpdate(filter = 'session') {
+    sendScreenshotsUpdate(filter = null) {
         if (!this.summarizer) return;
 
-        const screenshots = filter === 'session' 
+        // Use provided filter or fall back to current filter state
+        const activeFilter = filter || this.currentScreenshotFilter;
+
+        const screenshots = activeFilter === 'session' 
             ? this.summarizer.getScreenshotFiles(true)
             : this.summarizer.getScreenshotFiles(false);
 
@@ -673,6 +678,49 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
         super(filePath, screenshotsDir);
         this.electronApp = electronApp;
         this.sessionContext = '';
+        this.screenshotWatcher = null;
+        this.setupScreenshotWatcher();
+    }
+
+    setupScreenshotWatcher() {
+        if (!this.screenshotsDir || !fs.existsSync(this.screenshotsDir)) {
+            console.log('Screenshots directory not available for watching');
+            return;
+        }
+
+        try {
+            console.log(`Starting to watch screenshots directory: ${this.screenshotsDir}`);
+            
+            // Watch the screenshots directory for changes
+            this.screenshotWatcher = fs.watch(this.screenshotsDir, { persistent: true }, (eventType, filename) => {
+                if (!filename) return;
+                
+                // Check if it's an image file
+                const imageExtensions = /\.(png|jpg|jpeg|gif|bmp|webp)$/i;
+                if (!imageExtensions.test(filename)) return;
+                
+                console.log(`Screenshot ${eventType}: ${filename}`);
+                
+                // Debounce rapid file system events
+                clearTimeout(this.screenshotUpdateTimeout);
+                this.screenshotUpdateTimeout = setTimeout(() => {
+                    this.electronApp.sendScreenshotsUpdate();
+                }, 500);
+            });
+            
+        } catch (error) {
+            console.error('Error setting up screenshot watcher:', error);
+        }
+    }
+
+    // Override stop method to clean up watcher
+    async stop() {
+        if (this.screenshotWatcher) {
+            this.screenshotWatcher.close();
+            this.screenshotWatcher = null;
+        }
+        
+        await super.stop();
     }
 
     // Override console.log methods to send to renderer instead

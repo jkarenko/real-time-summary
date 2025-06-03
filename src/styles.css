@@ -424,6 +424,168 @@ body {
     font-style: italic;
 }
 
+/* Note entries */
+.note-entry {
+    margin-bottom: 20px;
+    padding: 16px;
+    border-left: 4px solid #e0e0e0;
+    background: #f9f9f9;
+    border-radius: 0 4px 4px 0;
+    transition: all 0.3s ease;
+}
+
+.note-entry:hover {
+    border-left-color: #0066cc;
+    background: #f5f8ff;
+}
+
+.note-entry p {
+    margin: 0 0 12px 0;
+}
+
+.note-entry p:last-child {
+    margin-bottom: 0;
+}
+
+.note-entry.highlighted {
+    background: rgba(0, 102, 204, 0.1);
+    border-left-color: #0066cc;
+    animation: highlight-pulse 0.3s ease;
+}
+
+@keyframes highlight-pulse {
+    0% { transform: translateX(0); }
+    50% { transform: translateX(4px); }
+    100% { transform: translateX(0); }
+}
+
+/* WYSIWYG Markdown styling in notes editor */
+.notes-editor h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 20px 0 16px 0;
+    color: #333;
+    border-bottom: 2px solid #e0e0e0;
+    padding-bottom: 8px;
+}
+
+.notes-editor h2 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 18px 0 14px 0;
+    color: #333;
+}
+
+.notes-editor h3 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 16px 0 12px 0;
+    color: #333;
+}
+
+.notes-editor h4 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 14px 0 10px 0;
+    color: #333;
+}
+
+.notes-editor strong {
+    font-weight: 600;
+    color: #333;
+}
+
+.notes-editor em {
+    font-style: italic;
+    color: #555;
+}
+
+.notes-editor ul,
+.notes-editor ol {
+    margin: 12px 0;
+    padding-left: 24px;
+}
+
+.notes-editor li {
+    margin: 4px 0;
+    line-height: 1.5;
+}
+
+.notes-editor p {
+    margin: 12px 0;
+    line-height: 1.6;
+}
+
+.notes-editor p:first-child {
+    margin-top: 0;
+}
+
+.notes-editor p:last-child {
+    margin-bottom: 0;
+}
+
+/* Formatting toolbar */
+.formatting-toolbar {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #e0e0e0;
+    border-top: 1px solid #e0e0e0;
+    justify-content: space-between;
+}
+
+.formatting-buttons {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.formatting-toolbar .btn {
+    padding: 4px 8px;
+    font-size: 12px;
+    min-width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.formatting-toolbar .btn:hover {
+    background: #e9ecef;
+}
+
+/* Save status indicator */
+.save-status {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 8px;
+    color: #6c757d;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6c757d;
+    transition: background-color 0.3s ease;
+}
+
+.status-dot.saved {
+    background: #28a745;
+}
+
+.status-dot.unsaved {
+    background: #6c757d;
+}
+
+.status-dot.error {
+    background: #dc3545;
+}
+
 /* Buttons */
 .btn {
     padding: 6px 12px;

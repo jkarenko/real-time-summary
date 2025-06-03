@@ -31,6 +31,9 @@ class RendererApp {
         
         console.log('RendererApp constructor completed');
         
+        // Initialize save status indicator
+        this.showSaveStatus('saved');
+        
         // Signal to main process that renderer is ready
         if (window.electronAPI) {
             window.electronAPI.rendererReady();
@@ -67,6 +70,14 @@ class RendererApp {
         this.clearNotesBtn = document.getElementById('clear-notes');
         this.saveSettingsBtn = document.getElementById('save-settings');
         this.closeSettingsBtn = document.getElementById('close-settings');
+        
+        // Formatting toolbar buttons
+        this.formatBoldBtn = document.getElementById('format-bold');
+        this.formatItalicBtn = document.getElementById('format-italic');
+        this.formatH1Btn = document.getElementById('format-h1');
+        this.formatH2Btn = document.getElementById('format-h2');
+        this.formatUlBtn = document.getElementById('format-ul');
+        this.formatOlBtn = document.getElementById('format-ol');
 
         // Modal elements
         this.settingsModal = document.getElementById('settings-modal');
@@ -92,6 +103,14 @@ class RendererApp {
         this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
         this.closeSettingsBtn.addEventListener('click', () => this.hideSettings());
 
+        // Formatting toolbar event listeners
+        this.formatBoldBtn.addEventListener('click', () => this.formatText('bold'));
+        this.formatItalicBtn.addEventListener('click', () => this.formatText('italic'));
+        this.formatH1Btn.addEventListener('click', () => this.formatText('formatBlock', 'h1'));
+        this.formatH2Btn.addEventListener('click', () => this.formatText('formatBlock', 'h2'));
+        this.formatUlBtn.addEventListener('click', () => this.formatText('insertUnorderedList'));
+        this.formatOlBtn.addEventListener('click', () => this.formatText('insertOrderedList'));
+
         // Filter buttons
         this.sessionFilterBtn.addEventListener('click', () => this.setScreenshotFilter('session'));
         this.allFilterBtn.addEventListener('click', () => this.setScreenshotFilter('all'));
@@ -105,8 +124,13 @@ class RendererApp {
         this.timeline.addEventListener('click', (e) => this.handleTimelineClick(e));
         this.timeline.addEventListener('mousedown', (e) => this.startTimelineSelection(e));
 
-        // Notes editor
+        // Notes editor events
         this.notesEditor.addEventListener('input', () => this.handleNotesChange());
+        this.notesEditor.addEventListener('blur', () => this.saveNotes());
+        this.notesEditor.addEventListener('paste', () => {
+            // Handle paste with delay to allow content processing
+            setTimeout(() => this.handleNotesChange(), 100);
+        });
 
         // Modal interactions
         this.settingsModal.addEventListener('click', (e) => {
@@ -115,6 +139,13 @@ class RendererApp {
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => this.handleKeyboardShortcuts(e));
+
+        // Save before window close
+        window.addEventListener('beforeunload', () => {
+            // Cancel any pending autosave and save immediately
+            clearTimeout(this.autoSaveTimeout);
+            this.saveNotes();
+        });
 
         // Prevent context menu on timeline for better UX
         this.timeline.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -130,6 +161,7 @@ class RendererApp {
             window.electronAPI.onCostUpdate((cost) => this.updateCost(cost));
             window.electronAPI.onStatusUpdate((status) => this.updateStatus(status));
             window.electronAPI.onSettingsUpdate((settings) => this.updateSettings(settings));
+            window.electronAPI.onAppDataUpdate((appData) => this.handleAppDataUpdate(appData));
         }
     }
 
@@ -349,20 +381,35 @@ class RendererApp {
         this.generateNoteBtn.disabled = true;
     }
 
+    async loadExistingNotes() {
+        try {
+            if (window.electronAPI) {
+                const notesContent = await window.electronAPI.loadNotes();
+                if (notesContent) {
+                    this.notesEditor.innerHTML = notesContent;
+                }
+            }
+        } catch (error) {
+            console.error('Error loading existing notes:', error);
+        }
+    }
+
     handleNoteCreated(noteData) {
         const { content, position, id } = noteData;
         
-        // Add note to editor
-        if (this.notesEditor.innerHTML.trim() === '' || 
-            this.notesEditor.textContent === 'Generated notes will appear here...') {
-            this.notesEditor.innerHTML = '';
-        }
+        // Convert line breaks to HTML for proper display in contenteditable
+        const htmlContent = content
+            .replace(/\n\n/g, '</p><p>') // Double line breaks become paragraph breaks
+            .replace(/\n/g, '<br>') // Single line breaks become <br> tags
+            .replace(/^\s*/, '<p>') // Add opening paragraph tag
+            .replace(/\s*$/, '</p>'); // Add closing paragraph tag
         
         const noteElement = document.createElement('div');
         noteElement.className = 'note-entry';
         noteElement.dataset.noteId = id;
-        noteElement.innerHTML = content;
+        noteElement.innerHTML = htmlContent;
         
+        // Add note to editor (append to existing content)
         this.notesEditor.appendChild(noteElement);
         
         // Add timeline marker
@@ -376,10 +423,8 @@ class RendererApp {
         this.generateNoteBtn.textContent = 'Generate Note';
         this.generateNoteBtn.disabled = false;
         
-        // Auto-save if enabled
-        if (this.settings.autoSave) {
-            this.saveNotes();
-        }
+        // Save immediately after adding a generated note
+        this.saveNotes();
     }
 
     highlightNote(noteId) {
@@ -400,17 +445,56 @@ class RendererApp {
     }
 
     handleNotesChange() {
-        if (this.settings.autoSave) {
-            // Debounced auto-save
-            clearTimeout(this.autoSaveTimeout);
-            this.autoSaveTimeout = setTimeout(() => this.saveNotes(), 2000);
+        // Clear any existing autosave timeout
+        clearTimeout(this.autoSaveTimeout);
+        
+        // Set up debounced autosave (3 seconds of inactivity)
+        this.autoSaveTimeout = setTimeout(() => {
+            this.saveNotes();
+            this.showSaveStatus('saved');
+        }, 3000);
+        
+        // Show unsaved status (gray dot)
+        this.showSaveStatus('unsaved');
+    }
+
+    showSaveStatus(status) {
+        // Update or create save status indicator
+        let statusIndicator = document.getElementById('save-status');
+        if (!statusIndicator) {
+            statusIndicator = document.createElement('div');
+            statusIndicator.id = 'save-status';
+            statusIndicator.className = 'save-status';
+            statusIndicator.innerHTML = 'Autosaved <span class="status-dot"></span>';
+            
+            // Add to the formatting toolbar on the right side
+            const toolbar = document.querySelector('.formatting-toolbar');
+            toolbar.appendChild(statusIndicator);
+        }
+        
+        // Update dot status
+        const dot = statusIndicator.querySelector('.status-dot');
+        if (dot) {
+            dot.className = 'status-dot';
+            if (status === 'saved') {
+                dot.classList.add('saved');
+            } else if (status === 'unsaved') {
+                dot.classList.add('unsaved');
+            } else if (status === 'error') {
+                dot.classList.add('error');
+            }
         }
     }
 
     saveNotes() {
         const content = this.notesEditor.innerHTML;
         if (window.electronAPI) {
-            window.electronAPI.saveNotes(content);
+            window.electronAPI.saveNotes(content).then(() => {
+                this.showSaveStatus('saved');
+            }).catch((error) => {
+                console.error('Error saving notes:', error);
+                this.showSaveStatus('error');
+            });
         }
     }
 
@@ -481,6 +565,28 @@ class RendererApp {
         this.settings = { ...this.settings, ...settings };
     }
 
+    handleAppDataUpdate(appData) {
+        const { transcriptFilename } = appData;
+        
+        // Set the transcript filename as default session topic if field is empty
+        if (transcriptFilename && this.sessionTopicInput && !this.sessionTopicInput.value.trim()) {
+            // Clean up the filename to be more readable
+            const cleanedFilename = transcriptFilename
+                .replace(/^\d{8}\s\d{4}\s/, '') // Remove date/time prefix like "20250603 1030 "
+                .replace(/\s+/g, ' ') // Normalize spaces
+                .trim();
+            
+            this.sessionTopicInput.value = cleanedFilename;
+            this.sessionTopicInput.placeholder = cleanedFilename;
+            
+            // Send the updated context to main process
+            this.updateSessionContext(cleanedFilename);
+        }
+        
+        // Load existing notes now that we have app data
+        this.loadExistingNotes();
+    }
+
     // Status updates
     updateStatus(status) {
         this.connectionStatus.textContent = status.connected ? 'Connected' : 'Disconnected';
@@ -543,6 +649,18 @@ class RendererApp {
                     e.preventDefault();
                     this.showSettings();
                     break;
+                case 'b':
+                    if (e.target === this.notesEditor) {
+                        e.preventDefault();
+                        this.formatText('bold');
+                    }
+                    break;
+                case 'i':
+                    if (e.target === this.notesEditor) {
+                        e.preventDefault();
+                        this.formatText('italic');
+                    }
+                    break;
                 case 'Enter':
                     if (e.target === this.noteHeaderInput) {
                         e.preventDefault();
@@ -555,6 +673,21 @@ class RendererApp {
         if (e.key === 'Escape') {
             this.hideSettings();
         }
+    }
+
+    formatText(command, value = null) {
+        // Focus the editor first
+        this.notesEditor.focus();
+        
+        // Execute the formatting command
+        if (value) {
+            document.execCommand(command, false, value);
+        } else {
+            document.execCommand(command);
+        }
+        
+        // Trigger autosave handling
+        this.handleNotesChange();
     }
 }
 
@@ -571,21 +704,3 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Add CSS for highlighted notes
-const style = document.createElement('style');
-style.textContent = `
-    .note-entry.highlighted {
-        background: rgba(0, 102, 204, 0.1);
-        border-left: 4px solid #0066cc;
-        padding-left: 12px;
-        transition: all 0.3s ease;
-    }
-    
-    .note-entry {
-        margin-bottom: 16px;
-        padding: 8px 0;
-        border-left: 4px solid transparent;
-        transition: all 0.3s ease;
-    }
-`;
-document.head.appendChild(style);

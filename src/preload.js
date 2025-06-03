@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateSettings: (settings) => ipcRenderer.invoke('update-settings', settings),
     
     // Notes operations
+    loadNotes: () => ipcRenderer.invoke('load-notes'),
     saveNotes: (content) => ipcRenderer.invoke('save-notes', content),
     exportNotes: () => ipcRenderer.invoke('export-notes'),
     
@@ -64,6 +65,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     
     onSettingsUpdate: (callback) => {
         ipcRenderer.on('settings-update', (event, settings) => callback(settings));
+    },
+    
+    onAppDataUpdate: (callback) => {
+        ipcRenderer.on('app-data-update', (event, appData) => callback(appData));
     },
     
     // Remove listeners (cleanup)

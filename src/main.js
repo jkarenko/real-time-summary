@@ -192,6 +192,7 @@ class ElectronTranscriptApp {
             console.log('Sending initial data to renderer...');
             this.sendToRenderer('status-update', { connected: true });
             this.sendScreenshotsUpdate();
+            this.sendAppDataUpdate();
             
             // Send existing transcript content
             this.sendExistingTranscriptContent();
@@ -342,6 +343,22 @@ class ElectronTranscriptApp {
             }
         });
 
+        ipcMain.handle('load-notes', async () => {
+            if (this.summarizer) {
+                try {
+                    if (fs.existsSync(this.summarizer.notesFilePath)) {
+                        const notesContent = fs.readFileSync(this.summarizer.notesFilePath, 'utf8');
+                        return this.markdownToHtml(notesContent);
+                    }
+                    return '';
+                } catch (error) {
+                    console.error('Error loading notes:', error);
+                    return '';
+                }
+            }
+            return '';
+        });
+
         // Menu and external links
         ipcMain.handle('open-external', (_, url) => {
             shell.openExternal(url);
@@ -405,6 +422,18 @@ class ElectronTranscriptApp {
         this.sendToRenderer('cost-update', costData);
     }
 
+    sendAppDataUpdate() {
+        const transcriptFilename = this.appSettings.transcriptFile 
+            ? path.basename(this.appSettings.transcriptFile, path.extname(this.appSettings.transcriptFile))
+            : '';
+        
+        this.sendToRenderer('app-data-update', {
+            transcriptFilename,
+            transcriptPath: this.appSettings.transcriptFile,
+            screenshotsDir: this.appSettings.screenshotsDir
+        });
+    }
+
     sendExistingTranscriptContent() {
         if (!this.summarizer) return;
         
@@ -422,18 +451,133 @@ class ElectronTranscriptApp {
         }
     }
 
+    markdownToHtml(markdown) {
+        // Enhanced Markdown to HTML conversion for WYSIWYG editing
+        let html = markdown;
+        
+        // Escape HTML entities first
+        html = html
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        
+        // Process headings
+        html = html
+            .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+            .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+            .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+            .replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        
+        // Process inline formatting (bold and italic)
+        html = html
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>');
+        
+        // Split into blocks for better list processing
+        const blocks = html.split(/\n\s*\n/);
+        const processedBlocks = blocks.map(block => {
+            const lines = block.split('\n');
+            
+            // Check if this block contains bullet list items
+            if (lines.some(line => line.match(/^- .+/))) {
+                const listItems = lines
+                    .filter(line => line.match(/^- .+/))
+                    .map(line => line.replace(/^- (.+)/, '<li>$1</li>'))
+                    .join('');
+                const nonListLines = lines
+                    .filter(line => !line.match(/^- .+/) && line.trim())
+                    .join('<br>');
+                
+                return (nonListLines ? `<p>${nonListLines}</p>` : '') + 
+                       (listItems ? `<ul>${listItems}</ul>` : '');
+            }
+            
+            // Check if this block contains numbered list items
+            else if (lines.some(line => line.match(/^\d+\. .+/))) {
+                const listItems = lines
+                    .filter(line => line.match(/^\d+\. .+/))
+                    .map(line => line.replace(/^\d+\. (.+)/, '<li>$1</li>'))
+                    .join('');
+                const nonListLines = lines
+                    .filter(line => !line.match(/^\d+\. .+/) && line.trim())
+                    .join('<br>');
+                
+                return (nonListLines ? `<p>${nonListLines}</p>` : '') + 
+                       (listItems ? `<ol>${listItems}</ol>` : '');
+            }
+            
+            // Regular paragraph or heading
+            else {
+                const content = lines.join('<br>').trim();
+                if (content.match(/^<h[1-6]>/)) {
+                    return content; // Already a heading
+                } else if (content) {
+                    return `<p>${content}</p>`;
+                }
+                return '';
+            }
+        });
+        
+        return processedBlocks.filter(block => block).join('');
+    }
+
     htmlToMarkdown(html) {
-        // Simple HTML to Markdown conversion
-        return html
-            .replace(/<div[^>]*>/g, '\n')
-            .replace(/<\/div>/g, '')
-            .replace(/<br[^>]*>/g, '\n')
-            .replace(/<[^>]*>/g, '')
+        // Enhanced HTML to Markdown conversion with proper list handling
+        let markdown = html;
+        
+        // Convert headings
+        markdown = markdown
+            .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
+            .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+            .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
+            .replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n');
+        
+        // Convert inline formatting
+        markdown = markdown
+            .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
+            .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*');
+        
+        // Convert unordered lists
+        markdown = markdown
+            .replace(/<ul[^>]*>(.*?)<\/ul>/gis, (match, content) => {
+                const items = content.match(/<li[^>]*>(.*?)<\/li>/gi) || [];
+                return items.map(item => 
+                    item.replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1')
+                ).join('\n') + '\n\n';
+            });
+        
+        // Convert ordered lists
+        markdown = markdown
+            .replace(/<ol[^>]*>(.*?)<\/ol>/gis, (match, content) => {
+                const items = content.match(/<li[^>]*>(.*?)<\/li>/gi) || [];
+                return items.map((item, index) => 
+                    item.replace(/<li[^>]*>(.*?)<\/li>/gi, `${index + 1}. $1`)
+                ).join('\n') + '\n\n';
+            });
+        
+        // Convert paragraphs and other elements
+        markdown = markdown
+            .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
+            .replace(/<div[^>]*>(.*?)<\/div>/gi, '$1\n')
+            .replace(/<br[^>]*>/gi, '\n');
+        
+        // Remove any remaining HTML tags
+        markdown = markdown.replace(/<[^>]*>/g, '');
+        
+        // Decode HTML entities
+        markdown = markdown
             .replace(/&nbsp;/g, ' ')
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
-            .replace(/&amp;/g, '&')
+            .replace(/&amp;/g, '&');
+        
+        // Clean up extra whitespace
+        markdown = markdown
+            .replace(/\n\s*\n\s*\n/g, '\n\n') // Normalize multiple line breaks
+            .replace(/^\s+|\s+$/g, '') // Trim start and end
             .trim();
+        
+        return markdown;
     }
 
     loadWindowState() {

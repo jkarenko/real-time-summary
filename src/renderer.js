@@ -23,6 +23,11 @@ class RendererApp {
         };
         this.notesLoaded = false; // Flag to prevent autosave until notes are loaded
         
+        // Virtual scrolling properties
+        this.allScreenshots = [];
+        this.virtualScrollInitialized = false;
+        this.scrollTimeout = null;
+        
         console.log('Initializing elements...');
         this.initializeElements();
         
@@ -242,30 +247,142 @@ class RendererApp {
         this.transcriptContent.scrollTop = this.transcriptContent.scrollHeight;
     }
 
-    // Screenshot handling
+    // Screenshot handling with virtual scrolling
     updateScreenshots(screenshots) {
+        this.allScreenshots = screenshots;
+        this.setupVirtualScrolling();
+        this.renderVisibleScreenshots();
+        this.updateSelectedScreenshotsStatus();
+    }
+
+    setupVirtualScrolling() {
+        if (!this.virtualScrollInitialized) {
+            // Add scroll listener for virtual scrolling
+            this.screenshotGrid.addEventListener('scroll', () => {
+                clearTimeout(this.scrollTimeout);
+                this.scrollTimeout = setTimeout(() => {
+                    this.renderVisibleScreenshots();
+                }, 50); // Debounce scroll events
+            });
+            
+            // Add resize listener to recalculate layout
+            window.addEventListener('resize', () => {
+                clearTimeout(this.resizeTimeout);
+                this.resizeTimeout = setTimeout(() => {
+                    this.renderVisibleScreenshots();
+                }, 100);
+            });
+            
+            this.virtualScrollInitialized = true;
+        }
+    }
+
+    renderVisibleScreenshots() {
+        if (!this.allScreenshots || this.allScreenshots.length === 0) {
+            this.screenshotGrid.innerHTML = '';
+            return;
+        }
+
+        // Calculate grid layout properties
+        const containerRect = this.screenshotGrid.getBoundingClientRect();
+        const containerHeight = this.screenshotGrid.clientHeight;
+        const containerWidth = this.screenshotGrid.clientWidth - 24; // Account for padding
+        const scrollTop = this.screenshotGrid.scrollTop;
+        
+        // Estimate grid properties (minmax(120px, 1fr) with 12px gap)
+        const minItemWidth = 120;
+        const gap = 12;
+        const padding = 12;
+        const availableWidth = containerWidth - (padding * 2);
+        
+        const itemsPerRow = Math.floor((availableWidth + gap) / (minItemWidth + gap));
+        const actualItemWidth = (availableWidth - (gap * (itemsPerRow - 1))) / itemsPerRow;
+        const itemHeight = actualItemWidth * (10 / 16); // 16:10 aspect ratio
+        const rowHeight = itemHeight + gap;
+        
+        // Calculate visible range
+        const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - 1); // 1 row buffer
+        const endRow = Math.min(
+            Math.ceil(this.allScreenshots.length / itemsPerRow),
+            Math.ceil((scrollTop + containerHeight) / rowHeight) + 1
+        ); // 1 row buffer
+        
+        const startIndex = startRow * itemsPerRow;
+        const endIndex = Math.min(this.allScreenshots.length, endRow * itemsPerRow);
+        
+        // Clear and set up container
         this.screenshotGrid.innerHTML = '';
         
-        screenshots.forEach((screenshot, index) => {
-            const item = document.createElement('div');
-            item.className = 'screenshot-item';
-            item.dataset.path = screenshot.path;
+        // Create spacer for total height
+        const totalRows = Math.ceil(this.allScreenshots.length / itemsPerRow);
+        const totalHeight = totalRows * rowHeight - gap; // Remove last gap
+        
+        const spacer = document.createElement('div');
+        spacer.style.height = `${totalHeight}px`;
+        spacer.style.width = '100%';
+        spacer.style.position = 'relative';
+        this.screenshotGrid.appendChild(spacer);
+        
+        // Render visible items
+        for (let i = startIndex; i < endIndex; i++) {
+            if (i >= this.allScreenshots.length) break;
             
-            if (this.selectedScreenshots.has(screenshot.path)) {
-                item.classList.add('selected');
-            }
-
-            item.innerHTML = `
-                <img src="file://${screenshot.path}" alt="Screenshot ${index + 1}" />
-                <div class="selection-indicator">✓</div>
-            `;
-
-            item.addEventListener('click', () => this.toggleScreenshotSelection(screenshot.path, item));
+            const screenshot = this.allScreenshots[i];
+            const row = Math.floor(i / itemsPerRow);
+            const col = i % itemsPerRow;
             
-            this.screenshotGrid.appendChild(item);
-        });
+            const item = this.createScreenshotItem(screenshot, i);
+            
+            // Position absolutely within the spacer
+            item.style.position = 'absolute';
+            item.style.top = `${row * rowHeight}px`;
+            item.style.left = `${col * (actualItemWidth + gap)}px`;
+            item.style.width = `${actualItemWidth}px`;
+            item.style.height = `${itemHeight}px`;
+            
+            spacer.appendChild(item);
+        }
+    }
 
-        this.updateSelectedScreenshotsStatus();
+    createScreenshotItem(screenshot, index) {
+        const item = document.createElement('div');
+        item.className = 'screenshot-item';
+        item.dataset.path = screenshot.path;
+        item.dataset.index = index;
+        
+        if (this.selectedScreenshots.has(screenshot.path)) {
+            item.classList.add('selected');
+        }
+
+        // Use lazy loading for images
+        const img = document.createElement('img');
+        img.alt = `Screenshot ${index + 1}`;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'cover';
+        
+        // Lazy load image when it becomes visible
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    img.src = `file://${screenshot.path}`;
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { rootMargin: '50px' });
+        
+        observer.observe(item);
+
+        const indicator = document.createElement('div');
+        indicator.className = 'selection-indicator';
+        indicator.textContent = '✓';
+
+        item.appendChild(img);
+        item.appendChild(indicator);
+        
+        item.addEventListener('click', () => this.toggleScreenshotSelection(screenshot.path, item));
+        
+        return item;
     }
 
     toggleScreenshotSelection(path, element) {
@@ -276,6 +393,16 @@ class RendererApp {
             this.selectedScreenshots.add(path);
             element.classList.add('selected');
         }
+        
+        // Update all visible items with the same path (in case of re-rendering)
+        const allItemsWithPath = this.screenshotGrid.querySelectorAll(`[data-path="${path}"]`);
+        allItemsWithPath.forEach(item => {
+            if (this.selectedScreenshots.has(path)) {
+                item.classList.add('selected');
+            } else {
+                item.classList.remove('selected');
+            }
+        });
         
         this.updateSelectedScreenshotsStatus();
         

@@ -281,20 +281,22 @@ body {
     flex: 1;
     padding: 12px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
     overflow-y: auto;
     min-height: 0;
+    max-height: 100%;
 }
 
 .screenshot-item {
     aspect-ratio: 16/10;
     border: 2px solid transparent;
-    border-radius: 4px;
+    border-radius: 6px;
     overflow: hidden;
     cursor: pointer;
     position: relative;
     background: #f0f0f0;
+    transition: all 0.2s ease;
 }
 
 .screenshot-item:hover {

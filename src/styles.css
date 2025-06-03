@@ -133,23 +133,84 @@ body {
     display: inline;
     cursor: pointer;
     user-select: none;
-    border-radius: 2px;
-    transition: background-color 0.15s ease;
+    transition: all 0.15s ease;
+    position: relative;
 }
 
 .word:hover {
     background: rgba(0, 102, 204, 0.08);
-}
-
-.word.selected {
-    background: rgba(0, 102, 204, 0.25);
-    color: #003d82;
+    border-radius: 2px;
 }
 
 .word.cursor-highlight {
     background: rgba(255, 193, 7, 0.4);
     color: #856404;
     animation: cursor-pulse 0.5s ease-in-out;
+    border-radius: 2px;
+}
+
+/* Clean continuous selection highlighting */
+.word.selected {
+    background: rgba(0, 102, 204, 0.2);
+    color: #003d82;
+    font-weight: 500;
+    position: relative;
+}
+
+.word.selection-start {
+    background: rgba(0, 102, 204, 0.2);
+    color: #003d82;
+    font-weight: 500;
+    border-radius: 3px 0 0 3px;
+    padding-left: 2px;
+    margin-left: -2px;
+    position: relative;
+}
+
+.word.selection-end {
+    background: rgba(0, 102, 204, 0.2);
+    color: #003d82;
+    font-weight: 500;
+    border-radius: 0 3px 3px 0;
+    padding-right: 2px;
+    margin-right: -2px;
+    position: relative;
+}
+
+.word.selection-middle {
+    background: rgba(0, 102, 204, 0.2);
+    color: #003d82;
+    font-weight: 500;
+    position: relative;
+}
+
+.word.selection-single {
+    background: rgba(0, 102, 204, 0.2);
+    color: #003d82;
+    font-weight: 500;
+    border-radius: 3px;
+    padding: 0 2px;
+    margin: 0 -2px;
+    position: relative;
+}
+
+/* Fill gaps between selected words using pseudo-elements */
+.word.selection-start::after,
+.word.selection-middle::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 100%;
+    width: 1ch; /* One character width to cover typical space */
+    background: rgba(0, 102, 204, 0.2);
+    z-index: 0; /* Same level as the word background */
+    pointer-events: none;
+}
+
+/* Don't add gap-fill after the last selected word */
+.word.selection-end::after {
+    display: none;
 }
 
 @keyframes cursor-pulse {

@@ -461,9 +461,9 @@ class RendererApp {
     }
 
     updateTranscriptVisualSelection() {
-        // Clear existing selection
-        document.querySelectorAll('.word.selected').forEach(el => {
-            el.classList.remove('selected');
+        // Clear existing selection classes
+        document.querySelectorAll('.word').forEach(el => {
+            el.classList.remove('selected', 'selection-start', 'selection-end', 'selection-middle', 'selection-single');
         });
         
         if (this.selectedRange.start === null || this.selectedRange.end === null) return;
@@ -471,11 +471,26 @@ class RendererApp {
         const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
         const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
         
-        // Highlight individual words that fall within the selection
+        // Apply enhanced continuous highlighting with box-shadow
         document.querySelectorAll('.word').forEach(wordEl => {
             const wordIndex = parseInt(wordEl.dataset.wordIndex);
             
             if (wordIndex >= startWord && wordIndex <= endWord) {
+                if (startWord === endWord) {
+                    // Single word selection
+                    wordEl.classList.add('selection-single');
+                } else if (wordIndex === startWord) {
+                    // First word in selection
+                    wordEl.classList.add('selection-start');
+                } else if (wordIndex === endWord) {
+                    // Last word in selection
+                    wordEl.classList.add('selection-end');
+                } else {
+                    // Middle words in selection
+                    wordEl.classList.add('selection-middle');
+                }
+                
+                // Also add the general selected class for backward compatibility
                 wordEl.classList.add('selected');
             }
         });

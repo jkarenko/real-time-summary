@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Meeting Summary</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Row 1: Main Content Area -->
+        <div class="row-1">
+            <!-- Column 1: Transcript Area -->
+            <div class="col-1">
+                <!-- Session Context Input -->
+                <div class="session-context">
+                    <label for="session-topic">Meeting Topic / Context:</label>
+                    <input type="text" id="session-topic" placeholder="e.g., Weekly Architecture Review, Sprint Planning..." />
+                </div>
+                
+                <!-- Live Transcript Display -->
+                <div class="transcript-container">
+                    <div class="transcript-header">
+                        <h3>Live Transcript</h3>
+                        <div class="transcript-controls">
+                            <button id="summarize-btn" class="btn btn-primary">Summarize</button>
+                            <button id="settings-btn" class="btn btn-secondary">Settings</button>
+                        </div>
+                    </div>
+                    <div id="transcript-content" class="transcript-content">
+                        <div class="transcript-placeholder">Waiting for transcript content...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Column 2: Screenshots & Notes -->
+            <div class="col-2">
+                <!-- Screenshot Thumbnails -->
+                <div class="screenshot-gallery">
+                    <div class="gallery-header">
+                        <h3>Screenshots</h3>
+                        <div class="gallery-controls">
+                            <button id="session-filter" class="btn btn-small active">Session</button>
+                            <button id="all-filter" class="btn btn-small">All</button>
+                            <input type="text" id="screenshot-search" placeholder="Search..." />
+                        </div>
+                    </div>
+                    <div id="screenshot-grid" class="screenshot-grid">
+                        <!-- Screenshots will be populated dynamically -->
+                    </div>
+                </div>
+                
+                <!-- Note Input -->
+                <div class="note-input-section">
+                    <label for="note-header">Note Header:</label>
+                    <input type="text" id="note-header" placeholder="e.g., Architecture Decisions, Action Items..." />
+                </div>
+                
+                <!-- Generate Note Button -->
+                <div class="note-actions">
+                    <button id="generate-note" class="btn btn-success">Generate Note</button>
+                    <div class="note-options">
+                        <button id="note-text-only" class="btn btn-small">Text Only</button>
+                        <button id="note-screenshots-only" class="btn btn-small">Screenshots Only</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Row 2: Visual Timeline -->
+        <div class="row-2">
+            <div class="timeline-container">
+                <div class="timeline-header">
+                    <h3>Meeting Timeline</h3>
+                    <div class="timeline-info">
+                        <span id="timeline-duration">0:00</span>
+                        <span id="word-count">0 words</span>
+                    </div>
+                </div>
+                <div id="timeline" class="timeline">
+                    <div class="timeline-track">
+                        <!-- Word count markers -->
+                        <div class="progress-markers">
+                            <div class="marker" data-progress="0">0%</div>
+                            <div class="marker" data-progress="25">25%</div>
+                            <div class="marker" data-progress="50">50%</div>
+                            <div class="marker" data-progress="75">75%</div>
+                            <div class="marker" data-progress="100">100%</div>
+                        </div>
+                        
+                        <!-- Current position indicator -->
+                        <div id="timeline-cursor" class="timeline-cursor"></div>
+                        
+                        <!-- Note markers will be added dynamically -->
+                        <div id="note-markers" class="note-markers"></div>
+                        
+                        <!-- Selection area -->
+                        <div id="selection-area" class="selection-area"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Row 3: Generated Notes -->
+        <div class="row-3">
+            <div class="notes-container">
+                <div class="notes-header">
+                    <h3>Generated Notes</h3>
+                    <div class="notes-controls">
+                        <button id="export-notes" class="btn btn-secondary">Export</button>
+                        <button id="clear-notes" class="btn btn-danger">Clear</button>
+                    </div>
+                </div>
+                <div id="notes-editor" class="notes-editor" contenteditable="true">
+                    <!-- Notes content will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals and overlays -->
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button id="close-settings" class="btn btn-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label for="word-limit">Context Word Limit:</label>
+                    <input type="number" id="word-limit" placeholder="0 = no limit" />
+                </div>
+                <div class="setting-group">
+                    <label for="read-only-mode">Read-Only Mode:</label>
+                    <input type="checkbox" id="read-only-mode" />
+                </div>
+                <div class="setting-group">
+                    <label for="auto-save">Auto-save Notes:</label>
+                    <input type="checkbox" id="auto-save" checked />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-settings" class="btn btn-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+        <div class="status-left">
+            <span id="connection-status" class="status-connected">Connected</span>
+            <span id="api-cost">$0.00</span>
+        </div>
+        <div class="status-right">
+            <span id="selected-screenshots">0 screenshots selected</span>
+            <span id="session-time">Session: 0:00</span>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

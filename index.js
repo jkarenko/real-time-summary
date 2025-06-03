@@ -47,13 +47,13 @@ class TranscriptSummarizer {
     getSummaryFilePath(transcriptPath) {
         const dir = path.dirname(transcriptPath);
         const basename = path.basename(transcriptPath, path.extname(transcriptPath));
-        return path.join(dir, `${basename}_summary.txt`);
+        return path.join(dir, `${basename}_summary.md`);
     }
 
     getNotesFilePath(transcriptPath) {
         const dir = path.dirname(transcriptPath);
         const basename = path.basename(transcriptPath, path.extname(transcriptPath));
-        return path.join(dir, `${basename}_notes.txt`);
+        return path.join(dir, `${basename}_notes.md`);
     }
 
     getCompactedFilePath(transcriptPath) {
@@ -1000,7 +1000,7 @@ NOTE REQUEST:
 ${noteRequest}
 
 INSTRUCTIONS:
-- Create a brief, focused note (2-4 sentences) based on the request and transcript content
+- Create a brief, focused note (2-8 sentences and a list of bullet points depending on the need) based on the request and transcript content
 - Include only the most relevant details from the transcript related to the request
 - Use a conversational, note-taking style rather than formal documentation
 - If the topic isn't discussed in the transcript, state that clearly
@@ -1070,7 +1070,7 @@ INSTRUCTIONS:
 
                     message = await this.anthropic.messages.create({
                         model: 'claude-sonnet-4-20250514',
-                        max_tokens: 300,
+                        max_tokens: 800,
                         messages: messagesToSend
                     });
                     break; // Success, exit retry loop

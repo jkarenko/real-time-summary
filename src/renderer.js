@@ -15,7 +15,13 @@ class RendererApp {
             wordLimit: 0,
             readOnlyMode: true,
             autoSave: true,
-            followTranscript: true
+            followTranscript: true,
+            audio: {
+                recordingEnabled: false,
+                audioSources: ['microphone'],
+                audioQuality: 'standard',
+                autoTranscribe: true
+            }
         };
         this.selectedRange = {
             start: null,
@@ -28,6 +34,12 @@ class RendererApp {
         this.allScreenshots = [];
         this.virtualScrollInitialized = false;
         this.scrollTimeout = null;
+        
+        // Audio recording properties
+        this.isRecording = false;
+        this.mediaRecorder = null;
+        this.audioStream = null;
+        this.currentSession = null;
         
         console.log('Initializing elements...');
         this.initializeElements();
@@ -50,6 +62,9 @@ class RendererApp {
         if (window.electronAPI) {
             window.electronAPI.rendererReady();
         }
+        
+        // Initialize audio system
+        this.initializeAudioSystem();
     }
 
     initializeElements() {
@@ -75,6 +90,7 @@ class RendererApp {
         // Button elements
         this.summarizeBtn = document.getElementById('summarize-btn');
         this.settingsBtn = document.getElementById('settings-btn');
+        this.recordBtn = document.getElementById('record-btn');
         this.generateNoteBtn = document.getElementById('generate-note');
         this.noteTextOnlyBtn = document.getElementById('note-text-only');
         this.noteScreenshotsOnlyBtn = document.getElementById('note-screenshots-only');
@@ -103,12 +119,22 @@ class RendererApp {
         this.sessionTime = document.getElementById('session-time');
         this.timelineDuration = document.getElementById('timeline-duration');
         this.wordCountDisplay = document.getElementById('word-count');
+        this.recordingStatus = document.getElementById('recording-status');
+
+        // Audio recording elements
+        this.recordingEnabledInput = document.getElementById('recording-enabled');
+        this.sourceMicrophoneInput = document.getElementById('source-microphone');
+        this.sourceSystemInput = document.getElementById('source-system');
+        this.audioQualitySelect = document.getElementById('audio-quality');
+        this.autoTranscribeInput = document.getElementById('auto-transcribe');
+        this.microphoneSelect = document.getElementById('microphone-select');
     }
 
     setupEventListeners() {
         // Button clicks
         this.summarizeBtn.addEventListener('click', () => this.handleSummarize());
         this.settingsBtn.addEventListener('click', () => this.showSettings());
+        this.recordBtn.addEventListener('click', () => this.toggleRecording());
         this.generateNoteBtn.addEventListener('click', () => this.handleGenerateNote());
         this.noteTextOnlyBtn.addEventListener('click', () => this.handleGenerateNote('text-only'));
         this.noteScreenshotsOnlyBtn.addEventListener('click', () => this.handleGenerateNote('screenshots-only'));
@@ -133,6 +159,14 @@ class RendererApp {
         this.screenshotSearchInput.addEventListener('input', (e) => this.filterScreenshots(e.target.value));
         this.sessionTopicInput.addEventListener('input', (e) => this.updateSessionContext(e.target.value));
         this.noteHeaderInput.addEventListener('input', (e) => this.updateNoteHeader(e.target.value));
+        
+        // Audio settings changes
+        this.recordingEnabledInput.addEventListener('change', () => this.updateAudioSettings());
+        this.sourceMicrophoneInput.addEventListener('change', () => this.updateAudioSettings());
+        this.sourceSystemInput.addEventListener('change', () => this.updateAudioSettings());
+        this.audioQualitySelect.addEventListener('change', () => this.updateAudioSettings());
+        this.autoTranscribeInput.addEventListener('change', () => this.updateAudioSettings());
+        this.microphoneSelect.addEventListener('change', () => this.updateAudioSettings());
 
         // Timeline interactions
         this.timeline.addEventListener('click', (e) => this.handleTimelineClick(e));
@@ -187,6 +221,405 @@ class RendererApp {
             window.electronAPI.onStatusUpdate((status) => this.updateStatus(status));
             window.electronAPI.onSettingsUpdate((settings) => this.updateSettings(settings));
             window.electronAPI.onAppDataUpdate((appData) => this.handleAppDataUpdate(appData));
+        }
+    }
+
+    // Audio recording system
+    async initializeAudioSystem() {
+        try {
+            if (window.electronAPI) {
+                const audioStatus = await window.electronAPI.getAudioStatus();
+                this.updateAudioUI(audioStatus);
+            }
+        } catch (error) {
+            console.error('Error initializing audio system:', error);
+        }
+    }
+
+    updateAudioUI(audioStatus) {
+        const { platform, blackHoleStatus, setupGuide, settings, availableInputs } = audioStatus;
+        
+        // Update settings
+        if (settings) {
+            // Ensure audio object exists
+            if (!this.settings.audio) {
+                this.settings.audio = {};
+            }
+            this.settings.audio = { ...this.settings.audio, ...settings };
+            console.log('Updated audio settings from main process:', this.settings.audio);
+            
+            // Update UI elements
+            if (this.recordingEnabledInput) {
+                this.recordingEnabledInput.checked = settings.recordingEnabled;
+            }
+            if (this.audioQualitySelect) {
+                this.audioQualitySelect.value = settings.audioQuality;
+            }
+            if (this.autoTranscribeInput) {
+                this.autoTranscribeInput.checked = settings.autoTranscribe;
+            }
+            if (this.microphoneSelect && settings.selectedMicrophone) {
+                this.microphoneSelect.value = settings.selectedMicrophone;
+            }
+            if (settings.audioSources) {
+                if (this.sourceMicrophoneInput) {
+                    this.sourceMicrophoneInput.checked = settings.audioSources.includes('microphone');
+                }
+                if (this.sourceSystemInput) {
+                    this.sourceSystemInput.checked = settings.audioSources.includes('system');
+                }
+            }
+        }
+        
+        // Populate microphone dropdown
+        if (availableInputs && this.microphoneSelect) {
+            this.populateMicrophoneDropdown(availableInputs);
+        }
+        
+        // Show/hide audio UI based on recording enabled state
+        this.updateAudioControlsVisibility();
+        
+        // Show setup guidance if needed
+        if (setupGuide && !setupGuide.canProceed) {
+            this.showAudioSetupGuidance(setupGuide);
+        }
+        
+        // Update recording status
+        this.updateRecordingStatus(blackHoleStatus);
+    }
+
+    updateAudioControlsVisibility() {
+        const recordingEnabled = this.settings.audio && this.settings.audio.recordingEnabled;
+        
+        // Show/hide record button and status
+        if (this.recordBtn) {
+            this.recordBtn.style.display = recordingEnabled ? 'block' : 'none';
+        }
+        if (this.recordingStatus) {
+            this.recordingStatus.style.display = recordingEnabled ? 'block' : 'none';
+        }
+        
+        // Show/hide audio settings sections
+        const audioSourcesSection = document.getElementById('audio-sources-section');
+        const audioQualitySection = document.getElementById('audio-quality-section');
+        const autoTranscribeSection = document.getElementById('auto-transcribe-section');
+        const microphoneSelectionSection = document.getElementById('microphone-selection-section');
+        
+        if (audioSourcesSection) {
+            audioSourcesSection.style.display = recordingEnabled ? 'block' : 'none';
+        }
+        if (audioQualitySection) {
+            audioQualitySection.style.display = recordingEnabled ? 'block' : 'none';
+        }
+        if (autoTranscribeSection) {
+            autoTranscribeSection.style.display = recordingEnabled ? 'block' : 'none';
+        }
+        if (microphoneSelectionSection) {
+            // Show microphone selection only when recording is enabled and microphone source is selected
+            const microphoneEnabled = recordingEnabled && this.settings.audio && 
+                                    this.settings.audio.audioSources && 
+                                    this.settings.audio.audioSources.includes('microphone');
+            microphoneSelectionSection.style.display = microphoneEnabled ? 'block' : 'none';
+        }
+    }
+
+    populateMicrophoneDropdown(availableInputs) {
+        if (!this.microphoneSelect) return;
+        
+        // Clear existing options
+        this.microphoneSelect.innerHTML = '';
+        
+        // Add default option
+        const defaultOption = document.createElement('option');
+        defaultOption.value = 'default';
+        defaultOption.textContent = 'Default System Input';
+        this.microphoneSelect.appendChild(defaultOption);
+        
+        // Add available input devices
+        availableInputs.forEach(device => {
+            if (device.hasInputs) {
+                // Create optgroup for the device
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = device.name;
+                
+                device.inputs.forEach(input => {
+                    const option = document.createElement('option');
+                    option.value = device.id;
+                    option.textContent = `${device.name} - ${input}`;
+                    optgroup.appendChild(option);
+                });
+                
+                this.microphoneSelect.appendChild(optgroup);
+            }
+        });
+        
+        console.log('Populated microphone dropdown with', availableInputs.length, 'devices');
+    }
+
+    showAudioSetupGuidance(setupGuide) {
+        const setupSection = document.getElementById('system-audio-setup');
+        if (!setupSection) return;
+        
+        setupSection.innerHTML = `
+            <h5>${setupGuide.title}</h5>
+            <ol>
+                ${setupGuide.steps.map(step => `<li>${step}</li>`).join('')}
+            </ol>
+            ${setupGuide.helpUrl ? `<button class="btn btn-secondary btn-sm" onclick="window.electronAPI.openBlackHoleInstaller()">Download BlackHole</button>` : ''}
+            ${setupGuide.verification ? `<button class="btn btn-secondary btn-sm" onclick="window.rendererApp.refreshAudioDetection()">Test Setup</button>` : ''}
+        `;
+        setupSection.style.display = 'block';
+    }
+
+    async refreshAudioDetection() {
+        try {
+            if (window.electronAPI) {
+                const result = await window.electronAPI.refreshAudioDetection();
+                this.updateAudioUI(result);
+            }
+        } catch (error) {
+            console.error('Error refreshing audio detection:', error);
+        }
+    }
+
+    updateRecordingStatus(blackHoleStatus) {
+        if (!this.recordingStatus) return;
+        
+        let status = '';
+        let className = '';
+        
+        if (!this.settings.audio || !this.settings.audio.recordingEnabled) {
+            status = '';
+        } else if (this.isRecording) {
+            status = 'Recording...';
+            className = 'recording';
+        } else if (blackHoleStatus && blackHoleStatus.installed) {
+            status = 'Ready to record';
+            className = 'ready';
+        } else {
+            status = 'Setup required';
+            className = 'setup-required';
+        }
+        
+        this.recordingStatus.textContent = status;
+        this.recordingStatus.className = `recording-status ${className}`;
+    }
+
+    async updateAudioSettings() {
+        const audioSources = [];
+        if (this.sourceMicrophoneInput && this.sourceMicrophoneInput.checked) {
+            audioSources.push('microphone');
+        }
+        if (this.sourceSystemInput && this.sourceSystemInput.checked) {
+            audioSources.push('system');
+        }
+        
+        const audioSettings = {
+            recordingEnabled: this.recordingEnabledInput ? this.recordingEnabledInput.checked : false,
+            audioSources,
+            audioQuality: this.audioQualitySelect ? this.audioQualitySelect.value : 'standard',
+            autoTranscribe: this.autoTranscribeInput ? this.autoTranscribeInput.checked : true,
+            selectedMicrophone: this.microphoneSelect ? this.microphoneSelect.value : 'default'
+        };
+        
+        // Ensure audio object exists
+        if (!this.settings.audio) {
+            this.settings.audio = {};
+        }
+        this.settings.audio = { ...this.settings.audio, ...audioSettings };
+        
+        // Send to main process
+        if (window.electronAPI) {
+            const updatedSettings = await window.electronAPI.updateAudioSettings(audioSettings);
+            console.log('Updated audio settings:', updatedSettings);
+        }
+        
+        // Update UI visibility
+        this.updateAudioControlsVisibility();
+        
+        // Update recording status
+        if (window.electronAPI) {
+            const audioStatus = await window.electronAPI.getAudioStatus();
+            this.updateRecordingStatus(audioStatus.blackHoleStatus);
+            console.log('Current audio settings after update:', this.settings.audio);
+        }
+    }
+
+    async toggleRecording() {
+        if (this.isRecording) {
+            await this.stopRecording();
+        } else {
+            await this.startRecording();
+        }
+    }
+
+    async startRecording() {
+        try {
+            console.log('Starting recording, current settings:', this.settings);
+            console.log('Audio settings:', this.settings.audio);
+            
+            // Check if audio system is ready
+            if (!this.settings.audio || !this.settings.audio.recordingEnabled) {
+                console.log('Recording not enabled:', this.settings.audio);
+                alert('Please enable audio recording in settings first.');
+                return;
+            }
+            
+            // Get the session context for the recording
+            const sessionContext = this.sessionTopicInput ? this.sessionTopicInput.value.trim() : 'Audio Recording Session';
+            
+            // Start recording session on main process
+            const result = await window.electronAPI.startAudioRecording(sessionContext);
+            if (!result.success) {
+                throw new Error(result.error);
+            }
+            
+            this.currentSession = result.sessionId;
+            
+            // Get user media
+            const constraints = this.getAudioConstraints();
+            this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            // Create MediaRecorder
+            this.mediaRecorder = new MediaRecorder(this.audioStream, {
+                mimeType: 'audio/webm;codecs=opus'
+            });
+            
+            // Handle data available
+            this.mediaRecorder.ondataavailable = async (event) => {
+                if (event.data.size > 0) {
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    await window.electronAPI.processAudioChunk(arrayBuffer);
+                    
+                    // Transcription is handled by the main process
+                }
+            };
+            
+            this.mediaRecorder.onerror = (event) => {
+                console.error('MediaRecorder error:', event.error);
+                this.stopRecording();
+            };
+            
+            // Start recording with 1-second chunks for real-time processing
+            this.mediaRecorder.start(1000);
+            this.isRecording = true;
+            
+            // Update UI
+            this.recordBtn.textContent = '⏹ Stop';
+            this.updateRecordingStatus();
+            
+            console.log('Audio recording started');
+            
+        } catch (error) {
+            console.error('Error starting recording:', error);
+            alert(`Failed to start recording: ${error.message}`);
+            this.stopRecording();
+        }
+    }
+
+    async stopRecording() {
+        try {
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+            }
+            
+            if (this.audioStream) {
+                this.audioStream.getTracks().forEach(track => track.stop());
+                this.audioStream = null;
+            }
+            
+            if (this.currentSession && window.electronAPI) {
+                const result = await window.electronAPI.stopAudioRecording();
+                if (result.success) {
+                    console.log('Recording session stopped:', result.sessionData);
+                }
+            }
+            
+            this.isRecording = false;
+            this.mediaRecorder = null;
+            this.currentSession = null;
+            
+            // Update UI
+            this.recordBtn.textContent = '● Record';
+            this.updateRecordingStatus();
+            
+            console.log('Audio recording stopped');
+            
+        } catch (error) {
+            console.error('Error stopping recording:', error);
+        }
+    }
+
+    getAudioConstraints() {
+        const audioSources = (this.settings.audio && this.settings.audio.audioSources) || ['microphone'];
+        const quality = (this.settings.audio && this.settings.audio.audioQuality) || 'standard';
+        const selectedMicrophone = (this.settings.audio && this.settings.audio.selectedMicrophone) || 'default';
+        
+        // Base constraints for microphone
+        let constraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        };
+        
+        // Add device selection if not default
+        if (selectedMicrophone !== 'default') {
+            // Note: For specific device selection, you would typically need the device ID
+            // This is a simplified approach - in a full implementation, you'd need to:
+            // 1. Enumerate media devices to get actual deviceIds
+            // 2. Map the selected device to a real deviceId
+            // For now, we'll just log the selection
+            console.log('Selected microphone device:', selectedMicrophone);
+        }
+        
+        // Adjust quality settings
+        switch (quality) {
+            case 'low':
+                constraints.audio.sampleRate = 16000;
+                constraints.audio.channelCount = 1;
+                break;
+            case 'high':
+                constraints.audio.sampleRate = 48000;
+                constraints.audio.channelCount = 2;
+                break;
+            default: // standard
+                constraints.audio.sampleRate = 44100;
+                constraints.audio.channelCount = 1;
+                break;
+        }
+        
+        // If system audio is enabled, we rely on BlackHole setup
+        // The user should have configured their system to route audio through BlackHole
+        
+        return constraints;
+    }
+
+    async processAudioForTranscription(audioBlob) {
+        try {
+            // Convert audio blob to a format suitable for transcription
+            // This is a placeholder - in a real implementation, you might:
+            // 1. Send audio to a speech-to-text service
+            // 2. Use Web Speech API (limited browser support)
+            // 3. Send to main process for server-side transcription
+            
+            // For now, simulate adding transcribed content
+            const simulatedTranscript = {
+                lines: [{
+                    timestamp: new Date().toLocaleTimeString(),
+                    speaker: 'Audio',
+                    content: 'Real-time transcription would appear here...'
+                }],
+                wordCount: this.wordCount + 8,
+                currentPosition: this.currentPosition + 8
+            };
+            
+            // Add to transcript (uncomment when ready for testing)
+            // this.handleTranscriptUpdate(simulatedTranscript);
+            
+        } catch (error) {
+            console.error('Error processing audio for transcription:', error);
         }
     }
 
@@ -1337,12 +1770,16 @@ class RendererApp {
     }
 
     saveSettings() {
+        // Update only the general settings, preserve audio settings
         this.settings = {
+            ...this.settings, // Preserve existing settings including audio
             wordLimit: parseInt(this.wordLimitInput.value) || 0,
             readOnlyMode: this.readOnlyModeInput.checked,
             autoSave: this.autoSaveInput.checked,
             followTranscript: this.followTranscriptInput.checked
         };
+        
+        console.log('Saving settings, preserving audio:', this.settings);
         
         if (window.electronAPI) {
             window.electronAPI.updateSettings(this.settings);

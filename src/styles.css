@@ -1081,6 +1081,26 @@ body {
     background: white;
 }
 
+#microphone-select {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+    background: white;
+}
+
+#microphone-select optgroup {
+    font-weight: bold;
+    color: #666;
+}
+
+#microphone-select option {
+    font-weight: normal;
+    color: #333;
+    padding: 4px 8px;
+}
+
 /* Status bar */
 .status-bar {
     position: fixed;

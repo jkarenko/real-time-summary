@@ -30,6 +30,21 @@ class MacOSAudioManager {
         });
     }
 
+    async getAvailableAudioInputs() {
+        return new Promise((resolve) => {
+            exec('system_profiler SPAudioDataType', (error, stdout) => {
+                if (error) {
+                    console.error('Error getting audio inputs:', error);
+                    resolve([]);
+                    return;
+                }
+                
+                const audioInputs = this.parseAudioInputs(stdout);
+                resolve(audioInputs);
+            });
+        });
+    }
+
     parseBlackHoleDevices(profileOutput) {
         const devices = [];
         const lines = profileOutput.split('\n');
@@ -59,6 +74,74 @@ class MacOSAudioManager {
             }
         }
         return null;
+    }
+
+    parseAudioInputs(profileOutput) {
+        const devices = [];
+        const lines = profileOutput.split('\n');
+        let currentDevice = null;
+        let inInputSection = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            
+            // Look for device names (they typically end with a colon)
+            if (line.match(/^[A-Z].*:$/) && !line.includes('Data Type')) {
+                currentDevice = {
+                    name: line.replace(':', ''),
+                    id: line.replace(':', '').toLowerCase().replace(/\s+/g, '_'),
+                    inputs: [],
+                    hasInputs: false
+                };
+                inInputSection = false;
+            }
+            
+            // Look for input-related information
+            if (currentDevice) {
+                if (line.includes('Input Source') || line.includes('Built-in Input') || 
+                    line.includes('Microphone') || line.includes('Line In') ||
+                    line.includes('BlackHole')) {
+                    inInputSection = true;
+                    currentDevice.hasInputs = true;
+                    
+                    // Extract input name
+                    let inputName = line;
+                    if (line.includes(':')) {
+                        inputName = line.split(':')[0].trim();
+                    }
+                    
+                    if (inputName && !currentDevice.inputs.includes(inputName)) {
+                        currentDevice.inputs.push(inputName);
+                    }
+                }
+                
+                // If we hit a new device section, save the previous one
+                if (line.match(/^[A-Z].*:$/) && !line.includes('Data Type') && i > 0) {
+                    if (currentDevice.hasInputs && !devices.find(d => d.id === currentDevice.id)) {
+                        devices.push(currentDevice);
+                    }
+                }
+            }
+        }
+        
+        // Add the last device if it has inputs
+        if (currentDevice && currentDevice.hasInputs && !devices.find(d => d.id === currentDevice.id)) {
+            devices.push(currentDevice);
+        }
+        
+        // Add common default devices if not found
+        const commonDevices = [
+            { name: 'Built-in Microphone', id: 'built_in_microphone', inputs: ['Built-in Microphone'], hasInputs: true },
+            { name: 'Default System Input', id: 'default', inputs: ['Default'], hasInputs: true }
+        ];
+        
+        commonDevices.forEach(commonDevice => {
+            if (!devices.find(d => d.id === commonDevice.id)) {
+                devices.unshift(commonDevice); // Add to beginning
+            }
+        });
+        
+        return devices;
     }
 }
 
@@ -212,7 +295,8 @@ class ElectronTranscriptApp {
                 recordingEnabled: false,
                 audioSources: ['microphone'],
                 audioQuality: 'standard',
-                autoTranscribe: true
+                autoTranscribe: true,
+                selectedMicrophone: 'default'
             }
         };
         
@@ -221,6 +305,10 @@ class ElectronTranscriptApp {
         this.audioSetupGuide = new AudioSetupGuide();
         this.audioFileManager = new AudioFileManager();
         this.blackHoleStatus = null;
+        
+        // Transcript tracking
+        this.wordCount = 0;
+        this.currentPosition = 0;
         
         this.setupApp();
     }
@@ -749,12 +837,27 @@ class ElectronTranscriptApp {
         });
 
         // Audio recording IPC handlers
-        ipcMain.handle('get-audio-status', () => {
+        ipcMain.handle('get-audio-status', async () => {
+            let availableInputs = [];
+            
+            // Get available audio inputs on macOS
+            if (process.platform === 'darwin') {
+                try {
+                    availableInputs = await this.macOSAudioManager.getAvailableAudioInputs();
+                } catch (error) {
+                    console.error('Error getting audio inputs:', error);
+                    availableInputs = [
+                        { name: 'Default System Input', id: 'default', inputs: ['Default'], hasInputs: true }
+                    ];
+                }
+            }
+            
             return {
                 platform: process.platform,
                 blackHoleStatus: this.blackHoleStatus,
                 setupGuide: this.blackHoleStatus ? this.audioSetupGuide.showMacOSSetup(this.blackHoleStatus) : null,
-                settings: this.appSettings.audio
+                settings: this.appSettings.audio,
+                availableInputs
             };
         });
 
@@ -800,6 +903,12 @@ class ElectronTranscriptApp {
         ipcMain.handle('process-audio-chunk', async (_, chunkBuffer) => {
             try {
                 await this.audioFileManager.processAudioChunk(chunkBuffer);
+                
+                // If auto-transcribe is enabled, process for transcription
+                if (this.appSettings.audio.autoTranscribe) {
+                    await this.processAudioForTranscription(chunkBuffer);
+                }
+                
                 return { success: true };
             } catch (error) {
                 console.error('Error processing audio chunk:', error);
@@ -814,6 +923,68 @@ class ElectronTranscriptApp {
         ipcMain.handle('open-audio-midi-setup', () => {
             shell.openExternal('file:///Applications/Utilities/Audio%20MIDI%20Setup.app');
         });
+    }
+
+    async processAudioForTranscription(chunkBuffer) {
+        try {
+            // Save the audio chunk temporarily for transcription
+            const tempDir = path.join(app.getPath('userData'), 'temp');
+            fs.mkdirSync(tempDir, { recursive: true });
+            
+            const timestamp = Date.now();
+            const tempAudioFile = path.join(tempDir, `audio_chunk_${timestamp}.webm`);
+            
+            // Write chunk to temporary file
+            fs.writeFileSync(tempAudioFile, Buffer.from(chunkBuffer));
+            
+            // Use existing transcript summarizer to transcribe
+            if (this.transcriptSummarizer) {
+                try {
+                    // Create a simulated transcript line for now
+                    // In a real implementation, you would:
+                    // 1. Convert audio to text using speech recognition service
+                    // 2. Parse the text into transcript format
+                    
+                    const transcriptLine = {
+                        timestamp: new Date().toLocaleTimeString(),
+                        speaker: 'Live Audio',
+                        content: 'Audio transcription in progress...' // Placeholder
+                    };
+                    
+                    // Add to transcript through the normal flow
+                    const transcriptData = {
+                        lines: [transcriptLine],
+                        wordCount: this.wordCount + transcriptLine.content.split(/\s+/).length,
+                        currentPosition: this.currentPosition + transcriptLine.content.split(/\s+/).length
+                    };
+                    
+                    this.wordCount = transcriptData.wordCount;
+                    this.currentPosition = transcriptData.currentPosition;
+                    
+                    // Send to renderer
+                    this.sendToRenderer('transcript-update', transcriptData);
+                    
+                    console.log('Processed audio chunk for transcription');
+                    
+                } catch (transcriptionError) {
+                    console.error('Error in transcription process:', transcriptionError);
+                }
+            }
+            
+            // Clean up temporary file
+            setTimeout(() => {
+                try {
+                    if (fs.existsSync(tempAudioFile)) {
+                        fs.unlinkSync(tempAudioFile);
+                    }
+                } catch (cleanupError) {
+                    console.error('Error cleaning up temp file:', cleanupError);
+                }
+            }, 5000); // Keep file for 5 seconds in case needed for debugging
+            
+        } catch (error) {
+            console.error('Error processing audio for transcription:', error);
+        }
     }
 
     sendToRenderer(channel, data) {

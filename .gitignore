@@ -1,3 +1,4 @@
 node_modules
 dist
 app-settings.json
+.DS_Store

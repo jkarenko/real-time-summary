@@ -1,16 +1,18 @@
 # Real-Time Meeting Summary Desktop App
 
-A desktop application that provides real-time AI-powered summarization of meeting transcripts with screenshot integration and note-taking capabilities.
+A desktop application that provides real-time AI-powered summarization of meeting transcripts with screenshot integration and advanced note-taking capabilities.
 
 ## Features
 
-- **Real-time transcript monitoring** with live updates
+- **Real-time transcript monitoring** with live updates and follow toggle
 - **AI-powered summarization** using Claude Sonnet 4
 - **Screenshot integration** with session filtering and selection
-- **Visual timeline** with word count markers and note indicators
-- **Interactive note generation** with text-only and screenshot-only modes
-- **Editable notes** with markdown support
-- **Professional desktop UI** with responsive layout
+- **Interactive timeline** with bracket indicator showing visible content range
+- **Context word limit highlighting** with pale yellow visual feedback
+- **Smart note generation** with word range tracking and timeline markers
+- **Advanced text selection** with word-level precision and visual highlighting
+- **Editable notes** with WYSIWYG markdown support and auto-save
+- **Professional desktop UI** with responsive layout and virtual scrolling
 
 ## Prerequisites
 

@@ -36,6 +36,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // External operations
     openExternal: (url) => ipcRenderer.invoke('open-external', url),
     
+    // Audio recording operations
+    getAudioStatus: () => ipcRenderer.invoke('get-audio-status'),
+    refreshAudioDetection: () => ipcRenderer.invoke('refresh-audio-detection'),
+    updateAudioSettings: (audioSettings) => ipcRenderer.invoke('update-audio-settings', audioSettings),
+    startAudioRecording: (sessionContext) => ipcRenderer.invoke('start-audio-recording', sessionContext),
+    stopAudioRecording: () => ipcRenderer.invoke('stop-audio-recording'),
+    processAudioChunk: (chunkBuffer) => ipcRenderer.invoke('process-audio-chunk', chunkBuffer),
+    openBlackHoleInstaller: () => ipcRenderer.invoke('open-blackhole-installer'),
+    openAudioMidiSetup: () => ipcRenderer.invoke('open-audio-midi-setup'),
+    
     // Renderer ready signal
     rendererReady: () => ipcRenderer.invoke('renderer-ready'),
     

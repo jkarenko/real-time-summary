@@ -23,6 +23,10 @@
                     <div class="transcript-header">
                         <h3>Live Transcript</h3>
                         <div class="transcript-controls">
+                            <div class="audio-controls">
+                                <button id="record-btn" class="btn btn-secondary" style="display: none;">● Record</button>
+                                <span id="recording-status" class="recording-status" style="display: none;"></span>
+                            </div>
                             <button id="summarize-btn" class="btn btn-primary">Summarize</button>
                             <button id="settings-btn" class="btn btn-secondary">Settings</button>
                         </div>
@@ -155,6 +159,41 @@
                 <div class="setting-group">
                     <label for="follow-transcript">Follow Live Transcript:</label>
                     <input type="checkbox" id="follow-transcript" checked title="Automatically scroll to bottom when new transcript content is added" />
+                </div>
+                
+                <!-- Audio Recording Settings -->
+                <div class="setting-group audio-section">
+                    <h4>Audio Recording</h4>
+                    <div class="setting-subgroup">
+                        <label for="recording-enabled">Enable Audio Recording:</label>
+                        <input type="checkbox" id="recording-enabled" />
+                    </div>
+                    
+                    <div id="audio-sources-section" class="setting-subgroup" style="display: none;">
+                        <label>Audio Sources:</label>
+                        <div class="checkbox-group">
+                            <label><input type="checkbox" id="source-microphone" checked> Microphone</label>
+                            <label><input type="checkbox" id="source-system"> System Audio</label>
+                        </div>
+                    </div>
+                    
+                    <div id="system-audio-setup" class="setup-guidance" style="display: none;">
+                        <!-- BlackHole setup instructions will be injected here -->
+                    </div>
+                    
+                    <div id="audio-quality-section" class="setting-subgroup" style="display: none;">
+                        <label for="audio-quality">Audio Quality:</label>
+                        <select id="audio-quality">
+                            <option value="low">Low (64kbps)</option>
+                            <option value="standard" selected>Standard (128kbps)</option>
+                            <option value="high">High (256kbps)</option>
+                        </select>
+                    </div>
+                    
+                    <div id="auto-transcribe-section" class="setting-subgroup" style="display: none;">
+                        <label for="auto-transcribe">Auto-transcribe Recording:</label>
+                        <input type="checkbox" id="auto-transcribe" checked />
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">

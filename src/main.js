@@ -3,9 +3,196 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 
 // Import the existing TranscriptSummarizer class
 const { TranscriptSummarizer } = require('../transcript-summarizer');
+
+// Audio recording system classes
+class MacOSAudioManager {
+    async detectBlackHole() {
+        return new Promise((resolve) => {
+            exec('system_profiler SPAudioDataType', (error, stdout) => {
+                if (error) {
+                    resolve({ installed: false, error: error.message });
+                    return;
+                }
+                
+                const hasBlackHole = stdout.includes('BlackHole');
+                const blackHoleDevices = this.parseBlackHoleDevices(stdout);
+                
+                resolve({
+                    installed: hasBlackHole,
+                    devices: blackHoleDevices,
+                    needsSetup: hasBlackHole && blackHoleDevices.length === 0
+                });
+            });
+        });
+    }
+
+    parseBlackHoleDevices(profileOutput) {
+        const devices = [];
+        const lines = profileOutput.split('\n');
+        
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('BlackHole')) {
+                // Extract device information
+                const deviceInfo = this.extractDeviceInfo(lines, i);
+                if (deviceInfo) {
+                    devices.push(deviceInfo);
+                }
+            }
+        }
+        
+        return devices;
+    }
+
+    extractDeviceInfo(lines, startIndex) {
+        // Look for device details in the following lines
+        for (let i = startIndex; i < Math.min(startIndex + 10, lines.length); i++) {
+            const line = lines[i].trim();
+            if (line.includes('BlackHole')) {
+                return {
+                    name: line.replace(/^\w+:\s*/, ''),
+                    detected: true
+                };
+            }
+        }
+        return null;
+    }
+}
+
+class AudioSetupGuide {
+    showMacOSSetup(blackHoleStatus) {
+        if (!blackHoleStatus.installed) {
+            return this.showBlackHoleInstallation();
+        }
+        
+        if (blackHoleStatus.needsSetup) {
+            return this.showMultiOutputSetup();
+        }
+        
+        return this.showReadyState();
+    }
+
+    showBlackHoleInstallation() {
+        return {
+            title: "Install BlackHole Audio Driver",
+            steps: [
+                "Download BlackHole from https://github.com/ExistentialAudio/BlackHole",
+                "Install the .pkg file and restart your Mac",
+                "Return to this app to continue setup"
+            ],
+            canProceed: false,
+            helpUrl: "https://github.com/ExistentialAudio/BlackHole/wiki/Installation"
+        };
+    }
+
+    showMultiOutputSetup() {
+        return {
+            title: "Configure Multi-Output Device",
+            steps: [
+                "Open Audio MIDI Setup (in /Applications/Utilities/)",
+                "Click the '+' button and select 'Create Multi-Output Device'",
+                "Check both 'Built-in Output' and 'BlackHole 2ch'",
+                "Right-click the Multi-Output Device and select 'Use This Device For Sound Output'",
+                "In your meeting app (Teams/Zoom), select BlackHole as microphone input"
+            ],
+            canProceed: true,
+            verification: "Test audio setup"
+        };
+    }
+
+    showReadyState() {
+        return {
+            title: "Audio Setup Complete",
+            steps: [
+                "BlackHole is installed and ready",
+                "You can now record system audio from meeting apps"
+            ],
+            canProceed: true,
+            verification: null
+        };
+    }
+}
+
+class AudioFileManager {
+    constructor() {
+        this.currentSession = null;
+        this.audioChunks = [];
+    }
+
+    startSession(sessionContext, userDataPath) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const sessionDir = path.join(userDataPath, 'recordings', timestamp);
+        
+        fs.mkdirSync(sessionDir, { recursive: true });
+        
+        this.currentSession = {
+            id: timestamp,
+            directory: sessionDir,
+            audioFile: path.join(sessionDir, 'audio.webm'),
+            transcriptFile: path.join(sessionDir, 'transcript.txt'),
+            metadataFile: path.join(sessionDir, 'metadata.json'),
+            context: sessionContext
+        };
+
+        // Initialize files
+        fs.writeFileSync(this.currentSession.transcriptFile, '');
+        fs.writeFileSync(this.currentSession.metadataFile, JSON.stringify({
+            sessionId: this.currentSession.id,
+            startTime: new Date().toISOString(),
+            context: sessionContext,
+            audioFormat: 'webm/opus',
+            chunks: []
+        }, null, 2));
+
+        return this.currentSession;
+    }
+
+    async processAudioChunk(chunkBuffer) {
+        if (!this.currentSession) return;
+
+        try {
+            // Append to audio file
+            fs.appendFileSync(this.currentSession.audioFile, Buffer.from(chunkBuffer));
+            
+            // Update metadata
+            const metadata = JSON.parse(fs.readFileSync(this.currentSession.metadataFile, 'utf8'));
+            metadata.chunks.push({
+                timestamp: new Date().toISOString(),
+                size: chunkBuffer.byteLength
+            });
+            fs.writeFileSync(this.currentSession.metadataFile, JSON.stringify(metadata, null, 2));
+
+            console.log(`Processed audio chunk: ${chunkBuffer.byteLength} bytes`);
+            
+            // Trigger transcription (placeholder for Phase 2)
+            // this.triggerTranscription(chunkBuffer);
+        } catch (error) {
+            console.error('Error processing audio chunk:', error);
+        }
+    }
+
+    stopSession() {
+        if (this.currentSession) {
+            // Update metadata with end time
+            try {
+                const metadata = JSON.parse(fs.readFileSync(this.currentSession.metadataFile, 'utf8'));
+                metadata.endTime = new Date().toISOString();
+                metadata.duration = new Date() - new Date(metadata.startTime);
+                fs.writeFileSync(this.currentSession.metadataFile, JSON.stringify(metadata, null, 2));
+            } catch (error) {
+                console.error('Error updating session metadata:', error);
+            }
+            
+            const sessionData = this.currentSession;
+            this.currentSession = null;
+            return sessionData;
+        }
+        return null;
+    }
+}
 
 class ElectronTranscriptApp {
     constructor() {
@@ -20,10 +207,39 @@ class ElectronTranscriptApp {
                 height: 900,
                 x: undefined,
                 y: undefined
+            },
+            audio: {
+                recordingEnabled: false,
+                audioSources: ['microphone'],
+                audioQuality: 'standard',
+                autoTranscribe: true
             }
         };
         
+        // Audio system components
+        this.macOSAudioManager = new MacOSAudioManager();
+        this.audioSetupGuide = new AudioSetupGuide();
+        this.audioFileManager = new AudioFileManager();
+        this.blackHoleStatus = null;
+        
         this.setupApp();
+    }
+
+    async initializeAudioSystem() {
+        console.log('Initializing audio system...');
+        
+        // Only initialize on macOS for now
+        if (process.platform === 'darwin') {
+            try {
+                this.blackHoleStatus = await this.macOSAudioManager.detectBlackHole();
+                console.log('BlackHole detection result:', this.blackHoleStatus);
+            } catch (error) {
+                console.error('Error detecting BlackHole:', error);
+                this.blackHoleStatus = { installed: false, error: error.message };
+            }
+        } else {
+            console.log('Audio recording not yet supported on', process.platform);
+        }
     }
 
     setupApp() {
@@ -49,6 +265,9 @@ class ElectronTranscriptApp {
 
         // Setup IPC handlers
         this.setupIPC();
+        
+        // Initialize audio system
+        this.initializeAudioSystem();
     }
 
     async createWindow() {
@@ -527,6 +746,73 @@ class ElectronTranscriptApp {
                     this.sendExistingTranscriptContent();
                 }
             }
+        });
+
+        // Audio recording IPC handlers
+        ipcMain.handle('get-audio-status', () => {
+            return {
+                platform: process.platform,
+                blackHoleStatus: this.blackHoleStatus,
+                setupGuide: this.blackHoleStatus ? this.audioSetupGuide.showMacOSSetup(this.blackHoleStatus) : null,
+                settings: this.appSettings.audio
+            };
+        });
+
+        ipcMain.handle('refresh-audio-detection', async () => {
+            if (process.platform === 'darwin') {
+                this.blackHoleStatus = await this.macOSAudioManager.detectBlackHole();
+                return {
+                    blackHoleStatus: this.blackHoleStatus,
+                    setupGuide: this.audioSetupGuide.showMacOSSetup(this.blackHoleStatus)
+                };
+            }
+            return { error: 'Not supported on this platform' };
+        });
+
+        ipcMain.handle('update-audio-settings', (_, audioSettings) => {
+            this.appSettings.audio = { ...this.appSettings.audio, ...audioSettings };
+            this.saveSettings();
+            return this.appSettings.audio;
+        });
+
+        ipcMain.handle('start-audio-recording', async (_, sessionContext) => {
+            try {
+                const session = this.audioFileManager.startSession(sessionContext, app.getPath('userData'));
+                console.log('Started audio recording session:', session.id);
+                return { success: true, sessionId: session.id };
+            } catch (error) {
+                console.error('Error starting audio recording:', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('stop-audio-recording', async () => {
+            try {
+                const sessionData = this.audioFileManager.stopSession();
+                console.log('Stopped audio recording session');
+                return { success: true, sessionData };
+            } catch (error) {
+                console.error('Error stopping audio recording:', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('process-audio-chunk', async (_, chunkBuffer) => {
+            try {
+                await this.audioFileManager.processAudioChunk(chunkBuffer);
+                return { success: true };
+            } catch (error) {
+                console.error('Error processing audio chunk:', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('open-blackhole-installer', () => {
+            shell.openExternal('https://github.com/ExistentialAudio/BlackHole');
+        });
+
+        ipcMain.handle('open-audio-midi-setup', () => {
+            shell.openExternal('file:///Applications/Utilities/Audio%20MIDI%20Setup.app');
         });
     }
 

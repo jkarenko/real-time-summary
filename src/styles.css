@@ -213,6 +213,31 @@ body {
     display: none;
 }
 
+/* Word limit context highlighting */
+.word.context-limit {
+    background-color: rgba(255, 255, 0, 0.15); /* Pale yellow background */
+    position: relative;
+    z-index: 1;
+}
+
+/* Fill gaps between context-highlighted words using pseudo-elements */
+.word.context-limit:not(.context-limit-end)::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 100%;
+    width: 1ch; /* One character width to cover typical space */
+    background: rgba(255, 255, 0, 0.15); /* Same pale yellow as the words */
+    z-index: 0; /* Behind the word content */
+    pointer-events: none;
+}
+
+/* Make context limit highlighting less prominent than selection */
+.word.context-limit.selected {
+    background-color: rgba(0, 102, 204, 0.3); /* Selection takes priority */
+}
+
 @keyframes cursor-pulse {
     0% { transform: scale(1); }
     50% { transform: scale(1.1); }
@@ -528,6 +553,17 @@ body {
     border: 1px solid #0066cc;
     border-radius: 20px;
     display: none;
+}
+
+.context-limit-area {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: rgba(255, 255, 0, 0.15); /* Same pale yellow as transcript highlighting */
+    border: 1px solid rgba(255, 200, 0, 0.4);
+    border-radius: 20px;
+    display: none;
+    z-index: 1; /* Behind selection area */
 }
 
 /* Row 3: Notes */

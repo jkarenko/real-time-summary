@@ -69,6 +69,7 @@ class RendererApp {
         this.timeline = document.getElementById('timeline');
         this.timelineCursor = document.getElementById('timeline-cursor');
         this.noteMarkers = document.getElementById('note-markers');
+        this.contextLimitArea = document.getElementById('context-limit-area');
         this.selectionArea = document.getElementById('selection-area');
 
         // Button elements
@@ -207,6 +208,8 @@ class RendererApp {
         this.currentPosition = currentPosition;
         this.updateTimeline();
         this.updateWordCountDisplay();
+        this.updateContextLimitHighlighting();
+        this.updateTimelineContextLimit();
     }
 
     addTranscriptLine(line, animate = false) {
@@ -614,7 +617,18 @@ class RendererApp {
             el.classList.remove('selected', 'selection-start', 'selection-end', 'selection-middle', 'selection-single');
         });
         
-        if (this.selectedRange.start === null || this.selectedRange.end === null) return;
+        if (this.selectedRange.start === null || this.selectedRange.end === null) {
+            // No selection, update context highlighting
+            this.updateContextLimitHighlighting();
+            this.updateTimelineContextLimit();
+            return;
+        }
+        
+        // Hide context highlighting and timeline indicator when there's a selection
+        document.querySelectorAll('.word').forEach(el => {
+            el.classList.remove('context-limit', 'context-limit-end');
+        });
+        this.contextLimitArea.style.display = 'none';
         
         const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
         const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
@@ -680,6 +694,8 @@ class RendererApp {
         this.selectionArea.style.display = 'none';
         this.updateTranscriptVisualSelection();
         this.updateSelectionStatus();
+        this.updateContextLimitHighlighting();
+        this.updateTimelineContextLimit(); // Show context highlighting when no selection
     }
 
     updateSelectionStatus() {
@@ -699,6 +715,64 @@ class RendererApp {
             // Reset to default placeholder
             if (this.noteHeaderInput) {
                 this.noteHeaderInput.placeholder = 'e.g., Architecture Decisions, Action Items...';
+            }
+        }
+    }
+
+    updateContextLimitHighlighting() {
+        // Clear existing context limit highlighting
+        document.querySelectorAll('.word').forEach(el => {
+            el.classList.remove('context-limit', 'context-limit-end');
+        });
+        
+        // Apply context limit highlighting if word limit is set and no specific range is selected
+        const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
+        if (this.settings.wordLimit > 0 && !hasSelection && this.wordCount > 0) {
+            const totalWords = this.wordCount;
+            
+            if (totalWords > this.settings.wordLimit) {
+                // Calculate the range that would be used: last_word - limit to last_word
+                const contextStartWord = totalWords - this.settings.wordLimit;
+                const contextEndWord = totalWords - 1;
+                
+                // Apply highlighting to words in this range
+                document.querySelectorAll('.word').forEach(wordEl => {
+                    const wordIndex = parseInt(wordEl.dataset.wordIndex);
+                    if (wordIndex >= contextStartWord && wordIndex <= contextEndWord) {
+                        wordEl.classList.add('context-limit');
+                        // Mark the last word in the context range to prevent gap-fill after it
+                        if (wordIndex === contextEndWord) {
+                            wordEl.classList.add('context-limit-end');
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    updateTimelineContextLimit() {
+        // Hide context limit area by default
+        this.contextLimitArea.style.display = 'none';
+        
+        // Show context limit area if word limit is set and no specific range is selected
+        const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
+        if (this.settings.wordLimit > 0 && !hasSelection && this.wordCount > 0) {
+            const totalWords = this.wordCount;
+            
+            if (totalWords > this.settings.wordLimit) {
+                // Calculate the range that would be used: last_word - limit to last_word
+                const contextStartWord = totalWords - this.settings.wordLimit;
+                const contextEndWord = totalWords - 1;
+                
+                // Calculate percentages for timeline positioning
+                const startPercent = (contextStartWord / totalWords) * 100;
+                const endPercent = (contextEndWord / totalWords) * 100;
+                const widthPercent = endPercent - startPercent;
+                
+                // Position and show the context limit area
+                this.contextLimitArea.style.left = `${startPercent}%`;
+                this.contextLimitArea.style.width = `${widthPercent}%`;
+                this.contextLimitArea.style.display = 'block';
             }
         }
     }
@@ -1243,11 +1317,18 @@ class RendererApp {
             window.electronAPI.updateSettings(this.settings);
         }
         
+        // Update context limit highlighting when word limit changes
+        this.updateContextLimitHighlighting();
+        this.updateTimelineContextLimit();
+        
         this.hideSettings();
     }
 
     updateSettings(settings) {
         this.settings = { ...this.settings, ...settings };
+        // Update context limit highlighting when settings change
+        this.updateContextLimitHighlighting();
+        this.updateTimelineContextLimit();
     }
 
     handleAppDataUpdate(appData) {

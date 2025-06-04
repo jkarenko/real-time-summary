@@ -164,6 +164,14 @@ class RendererApp {
         // Prevent context menu on timeline for better UX
         this.timeline.addEventListener('contextmenu', (e) => e.preventDefault());
         
+        // Add throttled scroll listener to transcript for unified cursor tracking
+        this.transcriptContent.addEventListener('scroll', () => {
+            clearTimeout(this.scrollUpdateTimeout);
+            this.scrollUpdateTimeout = setTimeout(() => {
+                this.updateTimelineCursorFromScroll();
+            }, 16); // ~60fps throttling
+        });
+        
         // Only clear selection when explicitly requested (not on outside clicks)
         // Selection should persist until a new selection is made or explicitly cleared
     }
@@ -263,6 +271,11 @@ class RendererApp {
         // Auto-scroll to bottom only if follow is enabled
         if (this.settings.followTranscript) {
             this.transcriptContent.scrollTop = this.transcriptContent.scrollHeight;
+        }
+        
+        // Update timeline cursor when new content is added (if not auto-scrolling)
+        if (!this.settings.followTranscript) {
+            this.updateTimelineCursorFromScroll();
         }
     }
 
@@ -458,21 +471,53 @@ class RendererApp {
     updateTimeline() {
         if (this.wordCount === 0) return;
         
-        // Calculate current word position based on loaded transcript lines
-        let currentWordPosition = 0;
-        if (this.transcriptLines.length > 0) {
-            const lastLine = this.transcriptLines[this.transcriptLines.length - 1];
-            currentWordPosition = lastLine.wordIndex + lastLine.wordCount;
-        }
-        
-        // Update cursor position (percentage of current words loaded vs total)
-        const percentage = Math.min((currentWordPosition / this.wordCount) * 100, 100);
-        this.timelineCursor.style.left = `${percentage}%`;
-        
         // Update note marker positions when word count changes
         if (this.notesLoaded) {
             this.extractAndDisplayNoteMarkers();
         }
+        
+        // Update timeline cursor to reflect current scroll position
+        this.updateTimelineCursorFromScroll();
+    }
+
+    updateTimelineCursorFromScroll() {
+        if (this.wordCount === 0) return;
+        
+        // Find the range of words visible in the current viewport
+        const transcriptRect = this.transcriptContent.getBoundingClientRect();
+        const viewportTop = transcriptRect.top;
+        const viewportBottom = transcriptRect.bottom;
+        
+        let firstVisibleWordIndex = 0;
+        let lastVisibleWordIndex = 0;
+        let foundFirst = false;
+        
+        // Find the first and last word elements that are visible in the viewport
+        const wordElements = document.querySelectorAll('.word');
+        for (const wordEl of wordElements) {
+            const wordRect = wordEl.getBoundingClientRect();
+            const wordIndex = parseInt(wordEl.dataset.wordIndex) || 0;
+            
+            // Check if word is visible in viewport
+            const isVisible = wordRect.bottom > viewportTop && wordRect.top < viewportBottom;
+            
+            if (isVisible) {
+                if (!foundFirst) {
+                    firstVisibleWordIndex = wordIndex;
+                    foundFirst = true;
+                }
+                lastVisibleWordIndex = wordIndex; // Keep updating to get the last visible word
+            }
+        }
+        
+        // Calculate percentage positions for timeline bracket
+        const startPercent = Math.min((firstVisibleWordIndex / this.wordCount) * 100, 100);
+        const endPercent = Math.min((lastVisibleWordIndex / this.wordCount) * 100, 100);
+        const widthPercent = Math.max(endPercent - startPercent, 0.5); // Minimum width for visibility
+        
+        // Update timeline cursor to show the bracket range
+        this.timelineCursor.style.left = `${startPercent}%`;
+        this.timelineCursor.style.width = `${widthPercent}%`;
     }
 
     handleTimelineClick(e) {
@@ -481,11 +526,8 @@ class RendererApp {
         const percentage = (x / rect.width) * 100;
         const targetWordPosition = Math.floor((percentage / 100) * this.wordCount);
         
-        // Update cursor position visually
-        this.timelineCursor.style.left = `${percentage}%`;
-        
-        // Highlight the corresponding word in transcript
-        this.highlightWordAtPosition(targetWordPosition);
+        // Scroll to the corresponding word in transcript (cursor will update automatically)
+        this.scrollToWordPosition(targetWordPosition);
         
         // Send timeline seek to main process
         if (window.electronAPI) {
@@ -493,28 +535,17 @@ class RendererApp {
         }
     }
 
-    highlightWordAtPosition(wordPosition) {
-        // Clear existing highlights
-        document.querySelectorAll('.word.cursor-highlight').forEach(el => {
-            el.classList.remove('cursor-highlight');
-        });
-        
-        // Find and highlight the word at the target position
+    scrollToWordPosition(wordPosition) {
+        // Find and scroll to the word at the target position
         const targetWord = document.querySelector(`[data-word-index="${wordPosition}"]`);
         if (targetWord) {
-            targetWord.classList.add('cursor-highlight');
-            
-            // Scroll to the word
+            // Scroll to the word - position it at the top of the view for consistency
             targetWord.scrollIntoView({ 
                 behavior: 'smooth', 
-                block: 'center',
+                block: 'start',
                 inline: 'nearest'
             });
-            
-            // Remove highlight after 2 seconds
-            setTimeout(() => {
-                targetWord.classList.remove('cursor-highlight');
-            }, 2000);
+            // Note: Timeline cursor will automatically update via scroll listener
         }
     }
 

@@ -14,7 +14,8 @@ class RendererApp {
         this.settings = {
             wordLimit: 0,
             readOnlyMode: true,
-            autoSave: true
+            autoSave: true,
+            followTranscript: true
         };
         this.selectedRange = {
             start: null,
@@ -59,6 +60,7 @@ class RendererApp {
         this.wordLimitInput = document.getElementById('word-limit');
         this.readOnlyModeInput = document.getElementById('read-only-mode');
         this.autoSaveInput = document.getElementById('auto-save');
+        this.followTranscriptInput = document.getElementById('follow-transcript');
 
         // Display elements
         this.transcriptContent = document.getElementById('transcript-content');
@@ -255,8 +257,10 @@ class RendererApp {
             setTimeout(() => lineElement.classList.remove('new'), 300);
         }
 
-        // Auto-scroll to bottom
-        this.transcriptContent.scrollTop = this.transcriptContent.scrollHeight;
+        // Auto-scroll to bottom only if follow is enabled
+        if (this.settings.followTranscript) {
+            this.transcriptContent.scrollTop = this.transcriptContent.scrollHeight;
+        }
     }
 
     // Screenshot handling with virtual scrolling
@@ -1218,6 +1222,7 @@ class RendererApp {
         this.wordLimitInput.value = this.settings.wordLimit;
         this.readOnlyModeInput.checked = this.settings.readOnlyMode;
         this.autoSaveInput.checked = this.settings.autoSave;
+        this.followTranscriptInput.checked = this.settings.followTranscript;
         
         this.settingsModal.classList.remove('hidden');
     }
@@ -1230,7 +1235,8 @@ class RendererApp {
         this.settings = {
             wordLimit: parseInt(this.wordLimitInput.value) || 0,
             readOnlyMode: this.readOnlyModeInput.checked,
-            autoSave: this.autoSaveInput.checked
+            autoSave: this.autoSaveInput.checked,
+            followTranscript: this.followTranscriptInput.checked
         };
         
         if (window.electronAPI) {

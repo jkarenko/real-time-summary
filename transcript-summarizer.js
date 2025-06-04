@@ -255,14 +255,34 @@ class TranscriptSummarizer {
                 return;
             }
 
-            // Use selected word range if provided, otherwise use full transcript
+            // Use selected word range if provided, otherwise use full transcript or apply word limit
             let contextTranscript = fullTranscript;
+            let actualStartWordIndex = startWordIndex;
+            let actualEndWordIndex = endWordIndex;
+            
             if (startWordIndex !== null && endWordIndex !== null) {
                 contextTranscript = this.extractWordRange(fullTranscript, startWordIndex, endWordIndex);
                 console.log(`Using selected word range ${startWordIndex}-${endWordIndex} for note context`);
+            } else if (this.contextWordLimit > 0) {
+                // Apply context limit and calculate word range indices
+                const words = fullTranscript.trim().split(/\s+/);
+                const totalWords = words.length;
+                
+                if (totalWords > this.contextWordLimit) {
+                    // Calculate range: last_word - limit as start, last_word as end
+                    actualStartWordIndex = totalWords - this.contextWordLimit;
+                    actualEndWordIndex = totalWords - 1;
+                    contextTranscript = this.getLimitedTranscript(fullTranscript);
+                    console.log(`Using word limit ${this.contextWordLimit}, calculated range ${actualStartWordIndex}-${actualEndWordIndex} for note context`);
+                } else {
+                    // If total words is less than limit, use the full transcript with proper indices
+                    actualStartWordIndex = 0;
+                    actualEndWordIndex = totalWords - 1;
+                    contextTranscript = fullTranscript;
+                    console.log(`Full transcript is within word limit, using range 0-${actualEndWordIndex} for note context`);
+                }
             } else {
-                // Apply context limit if set and no specific range selected
-                contextTranscript = this.getLimitedTranscript(fullTranscript);
+                contextTranscript = fullTranscript;
                 console.log('Using full transcript for note context');
             }
 
@@ -326,7 +346,7 @@ Brief note content:`;
             const requestCost = this.calculateCost(inputTokens, outputTokens);
 
             const noteContent = message.content[0].text;
-            this.saveNote(noteContent, startWordIndex, endWordIndex, noteRequest);
+            this.saveNote(noteContent, actualStartWordIndex, actualEndWordIndex, noteRequest);
             
             this.displayCostReport(requestCost, inputTokens, outputTokens);
 
@@ -343,6 +363,31 @@ Brief note content:`;
             if (this.selectedScreenshots.length === 0) {
                 console.log('⚠️  No screenshots selected for screenshot-only note');
                 return;
+            }
+
+            // Calculate word range indices for note positioning even for screenshot-only notes
+            let actualStartWordIndex = startWordIndex;
+            let actualEndWordIndex = endWordIndex;
+            
+            if (startWordIndex === null || endWordIndex === null) {
+                if (this.contextWordLimit > 0) {
+                    // Apply context limit and calculate word range indices
+                    const fullTranscript = this.getActiveTranscript();
+                    const words = fullTranscript.trim().split(/\s+/);
+                    const totalWords = words.length;
+                    
+                    if (totalWords > this.contextWordLimit) {
+                        // Calculate range: last_word - limit as start, last_word as end
+                        actualStartWordIndex = totalWords - this.contextWordLimit;
+                        actualEndWordIndex = totalWords - 1;
+                        console.log(`Screenshot-only note: using word limit ${this.contextWordLimit}, calculated range ${actualStartWordIndex}-${actualEndWordIndex}`);
+                    } else {
+                        // If total words is less than limit, use the full transcript with proper indices
+                        actualStartWordIndex = 0;
+                        actualEndWordIndex = totalWords - 1;
+                        console.log(`Screenshot-only note: full transcript is within word limit, using range 0-${actualEndWordIndex}`);
+                    }
+                }
             }
 
             const messages = [];
@@ -388,7 +433,7 @@ Brief note content:`;
             const requestCost = this.calculateCost(inputTokens, outputTokens);
 
             const noteContent = message.content[0].text;
-            this.saveNote(noteContent, startWordIndex, endWordIndex, noteRequest);
+            this.saveNote(noteContent, actualStartWordIndex, actualEndWordIndex, noteRequest);
             
             this.displayCostReport(requestCost, inputTokens, outputTokens);
 

@@ -867,19 +867,75 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
 
     // Override the processNewContent method to send updates to UI
     async processNewContent() {
-        const result = await super.processNewContent();
-        
-        // Send transcript update to renderer
-        if (this.electronApp) {
-            const lines = this.parseTranscriptToLines();
-            this.electronApp.sendTranscriptUpdate(
-                lines,
-                this.getWordCount(),
-                this.lastPosition
-            );
+        try {
+            const stats = fs.statSync(this.filePath);
+            if (stats.size > this.lastPosition) {
+                const stream = fs.createReadStream(this.filePath, {
+                    start: this.lastPosition,
+                    end: stats.size
+                });
+
+                let newContent = '';
+                stream.on('data', (chunk) => {
+                    newContent += chunk.toString();
+                });
+
+                stream.on('end', async () => {
+                    const trimmedContent = newContent.trim();
+                    
+                    if (trimmedContent) {
+                        console.log(`\n📝 New transcript content (${newContent.length} chars):`);
+                        console.log(trimmedContent);
+                        
+                        this.pendingContent += ' ' + trimmedContent;
+                        this.lastPosition = stats.size;
+                        
+                        // Send only the new lines to renderer for animation
+                        const newLines = this.parseNewContent(trimmedContent);
+                        if (newLines.length > 0 && this.electronApp) {
+                            this.electronApp.sendTranscriptUpdate(
+                                newLines,
+                                this.getWordCount(),
+                                this.lastPosition
+                            );
+                        }
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Error processing new content:', error.message);
         }
-        
-        return result;
+    }
+
+    // Parse only new content into lines
+    parseNewContent(content) {
+        try {
+            const lines = content.split('\n').filter(line => line.trim());
+            const parsedLines = [];
+            
+            // Calculate the current word index by getting existing word count
+            let currentWordIndex = this.getWordCount() - content.trim().split(/\s+/).length;
+            
+            lines.forEach((line) => {
+                const parsed = this.parseTranscriptLineFlexible(line.trim());
+                if (parsed) {
+                    const lineWordCount = parsed.content.split(/\s+/).length;
+                    parsedLines.push({
+                        timestamp: parsed.timestamp,
+                        speaker: parsed.speaker,
+                        content: parsed.content,
+                        wordIndex: currentWordIndex,
+                        wordCount: lineWordCount
+                    });
+                    currentWordIndex += lineWordCount;
+                }
+            });
+            
+            return parsedLines;
+        } catch (error) {
+            console.error('Error parsing new content:', error);
+            return [];
+        }
     }
 
     parseTranscriptToLines() {
@@ -944,7 +1000,7 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             
             // Parse each line using a more flexible parser
             const parsedLines = lines.map((line, index) => {
-                const parsed = this.parseTranscriptLineFlexible(line.trim(), index);
+                const parsed = this.parseTranscriptLineFlexible(line.trim());
                 console.log(`Line ${index + 1}: "${line.trim().substring(0, 50)}..." -> Parsed:`, parsed ? 'SUCCESS' : 'FAILED');
                 if (parsed) {
                     return {
@@ -964,7 +1020,7 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
         }
     }
 
-    parseTranscriptLineFlexible(line, index) {
+    parseTranscriptLineFlexible(line) {
         // Try multiple patterns to extract timestamp, speaker, and content
         
         // Pattern 1: [HH:MM:SS.SS] Speaker: Content
@@ -1010,6 +1066,26 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
 
     // Override note creation to send updates to UI
     async createNote(noteRequest, forceTextOnly = false, startWordIndex = null, endWordIndex = null) {
+        // Calculate the actual word indices that will be used (same logic as parent method)
+        let actualStartWordIndex = startWordIndex;
+        let actualEndWordIndex = endWordIndex;
+        
+        if (startWordIndex === null || endWordIndex === null) {
+            if (this.contextWordLimit > 0) {
+                const fullTranscript = this.getActiveTranscript();
+                const words = fullTranscript.trim().split(/\s+/);
+                const totalWords = words.length;
+                
+                if (totalWords > this.contextWordLimit) {
+                    actualStartWordIndex = totalWords - this.contextWordLimit;
+                    actualEndWordIndex = totalWords - 1;
+                } else {
+                    actualStartWordIndex = 0;
+                    actualEndWordIndex = totalWords - 1;
+                }
+            }
+        }
+        
         const result = await super.createNote(noteRequest, forceTextOnly, startWordIndex, endWordIndex);
         
         if (this.electronApp) {
@@ -1017,8 +1093,8 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             let formattedContent = '';
             if (noteRequest) {
                 formattedContent += `## ${noteRequest}`;
-                if (startWordIndex !== null && endWordIndex !== null) {
-                    formattedContent += ` <!-- words:${startWordIndex}-${endWordIndex} -->`;
+                if (actualStartWordIndex !== null && actualEndWordIndex !== null) {
+                    formattedContent += ` <!-- words:${actualStartWordIndex}-${actualEndWordIndex} -->`;
                 }
                 formattedContent += `\n\n${result || ''}`;
             } else {
@@ -1041,6 +1117,26 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
 
     // Override screenshot-only note creation to send updates to UI
     async createNoteFromScreenshotsOnly(noteRequest, startWordIndex = null, endWordIndex = null) {
+        // Calculate the actual word indices that will be used (same logic as parent method)
+        let actualStartWordIndex = startWordIndex;
+        let actualEndWordIndex = endWordIndex;
+        
+        if (startWordIndex === null || endWordIndex === null) {
+            if (this.contextWordLimit > 0) {
+                const fullTranscript = this.getActiveTranscript();
+                const words = fullTranscript.trim().split(/\s+/);
+                const totalWords = words.length;
+                
+                if (totalWords > this.contextWordLimit) {
+                    actualStartWordIndex = totalWords - this.contextWordLimit;
+                    actualEndWordIndex = totalWords - 1;
+                } else {
+                    actualStartWordIndex = 0;
+                    actualEndWordIndex = totalWords - 1;
+                }
+            }
+        }
+        
         const result = await super.createNoteFromScreenshotsOnly(noteRequest, startWordIndex, endWordIndex);
         
         if (this.electronApp) {
@@ -1048,8 +1144,8 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
             let formattedContent = '';
             if (noteRequest) {
                 formattedContent += `## ${noteRequest}`;
-                if (startWordIndex !== null && endWordIndex !== null) {
-                    formattedContent += ` <!-- words:${startWordIndex}-${endWordIndex} -->`;
+                if (actualStartWordIndex !== null && actualEndWordIndex !== null) {
+                    formattedContent += ` <!-- words:${actualStartWordIndex}-${actualEndWordIndex} -->`;
                 }
                 formattedContent += `\n\n${result || ''}`;
             } else {

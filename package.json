@@ -45,15 +45,13 @@
       "node_modules/**/*"
     ],
     "mac": {
-      "icon": "assets/icon.icns",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "target": "dmg"
     },
     "win": {
-      "icon": "assets/icon.ico",
       "target": "nsis"
     },
     "linux": {
-      "icon": "assets/icon.png",
       "target": "AppImage"
     }
   }

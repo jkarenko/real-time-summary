@@ -46,6 +46,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openBlackHoleInstaller: () => ipcRenderer.invoke('open-blackhole-installer'),
     openAudioMidiSetup: () => ipcRenderer.invoke('open-audio-midi-setup'),
     
+    // Whisper transcription operations
+    initializeWhisper: () => ipcRenderer.invoke('initialize-whisper'),
+    transcribeAudio: (audioData, sampleRate) => ipcRenderer.invoke('transcribe-audio', audioData, sampleRate),
+    
     // Renderer ready signal
     rendererReady: () => ipcRenderer.invoke('renderer-ready'),
     

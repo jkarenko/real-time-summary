@@ -199,6 +199,107 @@ class AudioSetupGuide {
     }
 }
 
+class AudioTranscriptionService {
+    constructor() {
+        this.isTranscribing = false;
+        this.whisperPipeline = null;
+        this.whisperAvailable = false;
+        this.initializationPromise = null;
+        console.log('AudioTranscriptionService initialized - using main process Whisper');
+    }
+
+    async initializeWhisper() {
+        if (this.initializationPromise) {
+            return this.initializationPromise;
+        }
+
+        this.initializationPromise = this._initializeWhisperInternal();
+        return this.initializationPromise;
+    }
+
+    async _initializeWhisperInternal() {
+        try {
+            console.log('🎯 Initializing Whisper in main process...');
+            
+            // Import transformers using dynamic import for ES module
+            const { pipeline } = await import('@xenova/transformers');
+            
+            console.log('📦 Transformers library loaded, initializing pipeline...');
+            
+            // Initialize the speech recognition pipeline
+            this.whisperPipeline = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny.en', {
+                chunk_length_s: 30,
+                stride_length_s: 5,
+            });
+            
+            this.whisperAvailable = true;
+            console.log('✅ Whisper transcription initialized successfully in main process');
+            
+            return { success: true, message: 'Whisper initialized successfully' };
+            
+        } catch (error) {
+            console.error('❌ Error initializing Whisper in main process:', error);
+            this.whisperAvailable = false;
+            return { success: false, error: error.message };
+        }
+    }
+
+    async transcribeAudio(audioData, sampleRate = 16000) {
+        if (!this.whisperAvailable || !this.whisperPipeline) {
+            throw new Error('Whisper transcription not available');
+        }
+
+        try {
+            console.log('🎯 Transcribing audio with Whisper:', {
+                dataLength: audioData.length,
+                sampleRate: sampleRate,
+                duration: audioData.length / sampleRate
+            });
+            
+            // Convert array back to Float32Array for Whisper
+            const audioFloat32 = new Float32Array(audioData);
+            
+            // Transcribe the audio using Whisper
+            const result = await this.whisperPipeline(audioFloat32, {
+                chunk_length_s: 30,
+                stride_length_s: 5,
+                return_timestamps: false
+            });
+            
+            console.log('🎯 Whisper transcription result:', result);
+            
+            return {
+                text: result.text || '',
+                confidence: 0.9, // Whisper doesn't provide confidence scores by default
+                isFinal: true
+            };
+            
+        } catch (error) {
+            console.error('❌ Error transcribing audio with Whisper:', error);
+            throw error;
+        }
+    }
+
+    addAudioChunk(audioBuffer) {
+        // This method is kept for compatibility
+        console.log('Audio chunk received in main process');
+    }
+
+    setTranscriptionCallback(callback) {
+        this.onTranscriptionResult = callback;
+    }
+
+    start() {
+        this.isTranscribing = true;
+        console.log('Transcription service started in main process');
+    }
+
+    stop() {
+        this.isTranscribing = false;
+        console.log('Transcription service stopped in main process');
+    }
+}
+
 class AudioFileManager {
     constructor() {
         this.currentSession = null;
@@ -304,6 +405,7 @@ class ElectronTranscriptApp {
         this.macOSAudioManager = new MacOSAudioManager();
         this.audioSetupGuide = new AudioSetupGuide();
         this.audioFileManager = new AudioFileManager();
+        this.audioTranscriptionService = new AudioTranscriptionService();
         this.blackHoleStatus = null;
         
         // Transcript tracking
@@ -356,6 +458,11 @@ class ElectronTranscriptApp {
         
         // Initialize audio system
         this.initializeAudioSystem();
+        
+        // Set up transcription callback for macOS speech recognition
+        this.audioTranscriptionService.setTranscriptionCallback((result) => {
+            this.handleTranscriptionResult(result);
+        });
     }
 
     async createWindow() {
@@ -380,6 +487,10 @@ class ElectronTranscriptApp {
             webPreferences: {
                 nodeIntegration: false,
                 contextIsolation: true,
+                webSecurity: false, // Required for loading local modules
+                allowRunningInsecureContent: true,
+                experimentalFeatures: true,
+                enableRemoteModule: false,
                 preload: path.join(__dirname, 'preload.js')
             },
             titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -891,6 +1002,9 @@ class ElectronTranscriptApp {
 
         ipcMain.handle('stop-audio-recording', async () => {
             try {
+                // Stop transcription service
+                this.audioTranscriptionService.stop();
+                
                 const sessionData = this.audioFileManager.stopSession();
                 console.log('Stopped audio recording session');
                 return { success: true, sessionData };
@@ -902,12 +1016,8 @@ class ElectronTranscriptApp {
 
         ipcMain.handle('process-audio-chunk', async (_, chunkBuffer) => {
             try {
+                // Just save the audio chunk - transcription is handled in renderer
                 await this.audioFileManager.processAudioChunk(chunkBuffer);
-                
-                // If auto-transcribe is enabled, process for transcription
-                if (this.appSettings.audio.autoTranscribe) {
-                    await this.processAudioForTranscription(chunkBuffer);
-                }
                 
                 return { success: true };
             } catch (error) {
@@ -923,67 +1033,63 @@ class ElectronTranscriptApp {
         ipcMain.handle('open-audio-midi-setup', () => {
             shell.openExternal('file:///Applications/Utilities/Audio%20MIDI%20Setup.app');
         });
+
+        // Whisper transcription IPC handlers
+        ipcMain.handle('initialize-whisper', async () => {
+            try {
+                console.log('🎯 IPC: Initialize Whisper called');
+                const result = await this.audioTranscriptionService.initializeWhisper();
+                console.log('🎯 IPC: Whisper initialization result:', result);
+                return result;
+            } catch (error) {
+                console.error('❌ IPC: Error initializing Whisper:', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('transcribe-audio', async (_, audioData, sampleRate) => {
+            try {
+                console.log('🎯 IPC: Transcribe audio called, data length:', audioData?.length || 'unknown', 'sample rate:', sampleRate);
+                const result = await this.audioTranscriptionService.transcribeAudio(audioData, sampleRate);
+                console.log('🎯 IPC: Transcription result:', result);
+                return result;
+            } catch (error) {
+                console.error('❌ IPC: Error transcribing audio:', error);
+                return { success: false, error: error.message };
+            }
+        });
     }
 
-    async processAudioForTranscription(chunkBuffer) {
+    handleTranscriptionResult(result) {
         try {
-            // Save the audio chunk temporarily for transcription
-            const tempDir = path.join(app.getPath('userData'), 'temp');
-            fs.mkdirSync(tempDir, { recursive: true });
-            
-            const timestamp = Date.now();
-            const tempAudioFile = path.join(tempDir, `audio_chunk_${timestamp}.webm`);
-            
-            // Write chunk to temporary file
-            fs.writeFileSync(tempAudioFile, Buffer.from(chunkBuffer));
-            
-            // Use existing transcript summarizer to transcribe
-            if (this.transcriptSummarizer) {
-                try {
-                    // Create a simulated transcript line for now
-                    // In a real implementation, you would:
-                    // 1. Convert audio to text using speech recognition service
-                    // 2. Parse the text into transcript format
-                    
-                    const transcriptLine = {
-                        timestamp: new Date().toLocaleTimeString(),
-                        speaker: 'Live Audio',
-                        content: 'Audio transcription in progress...' // Placeholder
-                    };
-                    
-                    // Add to transcript through the normal flow
-                    const transcriptData = {
-                        lines: [transcriptLine],
-                        wordCount: this.wordCount + transcriptLine.content.split(/\s+/).length,
-                        currentPosition: this.currentPosition + transcriptLine.content.split(/\s+/).length
-                    };
-                    
-                    this.wordCount = transcriptData.wordCount;
-                    this.currentPosition = transcriptData.currentPosition;
-                    
-                    // Send to renderer
-                    this.sendToRenderer('transcript-update', transcriptData);
-                    
-                    console.log('Processed audio chunk for transcription');
-                    
-                } catch (transcriptionError) {
-                    console.error('Error in transcription process:', transcriptionError);
-                }
+            // Only process final results to avoid too many updates
+            if (!result.isFinal && result.confidence < 0.7) {
+                return;
             }
             
-            // Clean up temporary file
-            setTimeout(() => {
-                try {
-                    if (fs.existsSync(tempAudioFile)) {
-                        fs.unlinkSync(tempAudioFile);
-                    }
-                } catch (cleanupError) {
-                    console.error('Error cleaning up temp file:', cleanupError);
-                }
-            }, 5000); // Keep file for 5 seconds in case needed for debugging
+            const transcriptLine = {
+                timestamp: new Date().toLocaleTimeString(),
+                speaker: 'Live Audio',
+                content: result.text
+            };
+            
+            // Add to transcript through the normal flow
+            const transcriptData = {
+                lines: [transcriptLine],
+                wordCount: this.wordCount + transcriptLine.content.split(/\s+/).length,
+                currentPosition: this.currentPosition + transcriptLine.content.split(/\s+/).length
+            };
+            
+            this.wordCount = transcriptData.wordCount;
+            this.currentPosition = transcriptData.currentPosition;
+            
+            // Send to renderer
+            this.sendToRenderer('transcript-update', transcriptData);
+            
+            console.log('Transcription result:', result.text, 'confidence:', result.confidence);
             
         } catch (error) {
-            console.error('Error processing audio for transcription:', error);
+            console.error('Error handling transcription result:', error);
         }
     }
 

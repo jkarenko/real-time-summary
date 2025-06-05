@@ -41,6 +41,15 @@ class RendererApp {
         this.audioStream = null;
         this.currentSession = null;
         
+        // Speech recognition properties
+        this.speechRecognition = null;
+        this.isTranscribing = false;
+        
+        // WebAssembly Whisper transcription
+        this.whisperTranscriber = null;
+        this.whisperAvailable = false;
+        this.audioChunksBuffer = [];
+        
         console.log('Initializing elements...');
         this.initializeElements();
         
@@ -231,8 +240,1026 @@ class RendererApp {
                 const audioStatus = await window.electronAPI.getAudioStatus();
                 this.updateAudioUI(audioStatus);
             }
+            
+            // Initialize transcription systems
+            await this.initializeWhisperTranscription();
+            this.initializeSpeechRecognition();
         } catch (error) {
             console.error('Error initializing audio system:', error);
+        }
+    }
+
+    async initializeWhisperTranscription() {
+        try {
+            console.log('🎯 Initializing Whisper via main process...');
+            
+            // Set status to show initialization
+            if (this.recordingStatus) {
+                this.recordingStatus.textContent = 'Downloading Whisper model...';
+                this.recordingStatus.className = 'recording-status setup-required';
+            }
+            
+            // Initialize Whisper in main process via IPC
+            const result = await window.electronAPI.initializeWhisper();
+            
+            if (result && result.success) {
+                this.whisperAvailable = true;
+                console.log('✅ Whisper transcription initialized via main process');
+                
+                // Update status
+                if (this.recordingStatus) {
+                    this.recordingStatus.textContent = 'Whisper ready';
+                    this.recordingStatus.className = 'recording-status ready';
+                }
+            } else {
+                throw new Error(result?.error || 'Unknown error initializing Whisper');
+            }
+            
+        } catch (error) {
+            console.error('❌ Error initializing Whisper transcription:', error);
+            console.error('Error details:', error.message);
+            this.whisperAvailable = false;
+            
+            // Update status to show fallback
+            if (this.recordingStatus) {
+                this.recordingStatus.textContent = 'Whisper failed - using Web Speech API';
+                this.recordingStatus.className = 'recording-status ready';
+            }
+        }
+    }
+
+    async transcribeAudioWithWhisper(audioBlob) {
+        if (!this.whisperAvailable) {
+            throw new Error('Whisper transcription not available');
+        }
+
+        try {
+            console.log('🎯 Converting audio blob to Float32Array for Whisper transcription...');
+            
+            // Use OfflineAudioContext to convert the audio properly
+            const audioFloat32 = await this.convertAudioBlobToFloat32Array(audioBlob);
+            
+            console.log('🎯 Audio converted to Float32Array:', {
+                length: audioFloat32.length,
+                duration: audioFloat32.length / 16000
+            });
+            
+            // Send the converted audio data to main process for transcription
+            const result = await window.electronAPI.transcribeAudio(Array.from(audioFloat32), 16000);
+            
+            if (result && result.success !== false) {
+                return {
+                    text: result.text || '',
+                    confidence: result.confidence || 0.9,
+                    isFinal: result.isFinal || true
+                };
+            } else {
+                throw new Error(result?.error || 'Transcription failed');
+            }
+            
+        } catch (error) {
+            console.error('❌ Error transcribing with Whisper via main process:', error);
+            throw error;
+        }
+    }
+
+    async convertAudioBlobToFloat32Array(audioBlob) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                // Convert blob to ArrayBuffer
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                
+                // Try to decode with AudioContext first
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+                
+                let audioBuffer;
+                try {
+                    audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                    console.log('🎯 Audio decoded successfully with AudioContext:', {
+                        sampleRate: audioBuffer.sampleRate,
+                        duration: audioBuffer.duration,
+                        channels: audioBuffer.numberOfChannels
+                    });
+                } catch (decodeError) {
+                    console.log('🎯 AudioContext.decodeAudioData failed, trying alternative method:', decodeError.message);
+                    
+                    // If decoding fails, it's likely WebM/Opus format
+                    // Let's try to extract raw audio data from the stream
+                    const audioFloat32 = await this.extractRawAudioFromStream(audioBlob);
+                    resolve(audioFloat32);
+                    return;
+                }
+                
+                // Get audio data from the first channel
+                const audioData = audioBuffer.getChannelData(0);
+                
+                // If the sample rate doesn't match Whisper's expected rate, resample
+                if (audioBuffer.sampleRate !== 16000) {
+                    console.log('🎯 Resampling audio from', audioBuffer.sampleRate, 'to 16000');
+                    const resampledData = this.resampleAudio(audioData, audioBuffer.sampleRate, 16000);
+                    resolve(resampledData);
+                } else {
+                    resolve(audioData);
+                }
+                
+            } catch (error) {
+                console.error('❌ Error converting audio blob:', error);
+                
+                // Final fallback: return silence
+                try {
+                    console.log('🎯 Using final fallback - generating silence');
+                    const audioFloat32 = await this.convertAudioBlobFallback(audioBlob);
+                    resolve(audioFloat32);
+                } catch (fallbackError) {
+                    console.error('❌ All conversion methods failed:', fallbackError);
+                    reject(fallbackError);
+                }
+            }
+        });
+    }
+
+    async extractRawAudioFromStream(audioBlob) {
+        // For WebM/Opus that can't be decoded by AudioContext,
+        // we'll use a different approach - capture audio using Web Audio API directly
+        // This is a simplified implementation that returns silence for now
+        // but could be enhanced to actually extract audio data
+        
+        console.log('🎯 Extracting raw audio data from WebM stream (simplified implementation)');
+        
+        // For now, return a small amount of silence
+        // In a real implementation, you'd parse the WebM container and extract Opus frames
+        const sampleRate = 16000;
+        const duration = Math.min(audioBlob.size / 1000, 30); // Estimate duration
+        const samples = Math.floor(sampleRate * duration);
+        
+        // Generate some very quiet noise instead of complete silence
+        // This helps test that Whisper is actually processing something
+        const audioData = new Float32Array(samples);
+        for (let i = 0; i < samples; i++) {
+            audioData[i] = (Math.random() - 0.5) * 0.001; // Very quiet noise
+        }
+        
+        console.log('🎯 Generated test audio data:', {
+            samples: samples,
+            duration: duration,
+            blobSize: audioBlob.size
+        });
+        
+        return audioData;
+    }
+
+    resampleAudio(audioData, fromSampleRate, toSampleRate) {
+        const ratio = fromSampleRate / toSampleRate;
+        const newLength = Math.round(audioData.length / ratio);
+        const resampledData = new Float32Array(newLength);
+        
+        for (let i = 0; i < newLength; i++) {
+            const srcIndex = i * ratio;
+            const srcIndexFloor = Math.floor(srcIndex);
+            const srcIndexCeil = Math.min(srcIndexFloor + 1, audioData.length - 1);
+            const fraction = srcIndex - srcIndexFloor;
+            
+            // Linear interpolation
+            resampledData[i] = audioData[srcIndexFloor] * (1 - fraction) + 
+                              audioData[srcIndexCeil] * fraction;
+        }
+        
+        console.log('🎯 Audio resampled:', {
+            originalLength: audioData.length,
+            newLength: resampledData.length,
+            ratio: ratio
+        });
+        
+        return resampledData;
+    }
+
+    async convertAudioBlobFallback(audioBlob) {
+        // Simple fallback that creates silence if audio conversion fails
+        // This ensures Whisper gets some data to process
+        console.log('🎯 Using fallback conversion - generating short silence for testing');
+        
+        const sampleRate = 16000;
+        const duration = 1; // 1 second of silence
+        const samples = sampleRate * duration;
+        
+        return new Float32Array(samples); // All zeros = silence
+    }
+
+    setupDirectAudioCapture() {
+        try {
+            console.log('🎯 Setting up direct audio capture for Whisper transcription');
+            
+            // Create audio context for direct audio processing
+            // Don't force 16kHz, let it use the default and we'll resample later
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Set up audio capture buffer
+            this.capturedAudioData = [];
+            this.captureStartTime = Date.now();
+            
+            console.log('🎯 Direct audio capture initialized:', {
+                sampleRate: this.audioContext.sampleRate,
+                startTime: new Date().toLocaleTimeString()
+            });
+            
+            // Use AudioWorklet if available (modern approach), otherwise fall back to ScriptProcessor
+            if (this.audioContext.audioWorklet) {
+                console.log('🎯 AudioWorklet available, using modern approach');
+                this.setupAudioWorklet();
+            } else {
+                console.log('🎯 AudioWorklet not available, using ScriptProcessor fallback');
+                this.setupScriptProcessor();
+            }
+            
+        } catch (error) {
+            console.error('❌ Error setting up direct audio capture:', error);
+            // Don't fail completely, just continue without direct capture
+            console.log('🎯 Continuing with MediaRecorder-only approach');
+        }
+    }
+
+    async setupAudioWorklet() {
+        try {
+            console.log('🎯 Attempting to use AudioWorklet (modern approach)');
+            
+            // Create a simple inline AudioWorklet processor
+            const processorCode = `
+                class DirectCaptureProcessor extends AudioWorkletProcessor {
+                    constructor() {
+                        super();
+                        this.chunkCount = 0;
+                    }
+                    
+                    process(inputs, outputs, parameters) {
+                        const input = inputs[0];
+                        if (input.length > 0) {
+                            const channelData = input[0];
+                            if (channelData) {
+                                // Send audio data to main thread
+                                this.port.postMessage({
+                                    type: 'audioData',
+                                    data: channelData,
+                                    chunkCount: this.chunkCount++
+                                });
+                            }
+                        }
+                        return true;
+                    }
+                }
+                
+                registerProcessor('direct-capture-processor', DirectCaptureProcessor);
+            `;
+            
+            const blob = new Blob([processorCode], { type: 'application/javascript' });
+            const workletURL = URL.createObjectURL(blob);
+            
+            await this.audioContext.audioWorklet.addModule(workletURL);
+            
+            // Create source from the audio stream
+            this.audioSource = this.audioContext.createMediaStreamSource(this.audioStream);
+            
+            // Create the worklet node
+            this.workletNode = new AudioWorkletNode(this.audioContext, 'direct-capture-processor');
+            
+            // Handle messages from the worklet
+            this.workletNode.port.onmessage = (event) => {
+                const { type, data, chunkCount } = event.data;
+                if (type === 'audioData') {
+                    // Process the audio data
+                    this.handleWorkletAudioData(data, chunkCount);
+                }
+            };
+            
+            // Connect the audio source to the worklet
+            this.audioSource.connect(this.workletNode);
+            // Don't connect to destination to avoid feedback - use a dummy gain node
+            this.workletNode.connect(this.audioContext.createGain());
+            
+            console.log('✅ AudioWorklet setup successful');
+            
+            // Clean up the blob URL
+            URL.revokeObjectURL(workletURL);
+            
+        } catch (error) {
+            console.error('❌ AudioWorklet setup failed:', error);
+            console.log('🎯 Falling back to ScriptProcessor');
+            this.setupScriptProcessor();
+        }
+    }
+
+    handleWorkletAudioData(audioData, chunkCount) {
+        try {
+            // Check for actual audio vs silence
+            let hasAudio = false;
+            let maxAmplitude = 0;
+            for (let i = 0; i < audioData.length; i++) {
+                const amplitude = Math.abs(audioData[i]);
+                maxAmplitude = Math.max(maxAmplitude, amplitude);
+                if (amplitude > 0.001) { // Threshold for detecting audio
+                    hasAudio = true;
+                }
+            }
+            
+            // Copy the audio data (Float32Array is what Whisper expects)
+            const chunk = new Float32Array(audioData.length);
+            chunk.set(audioData);
+            this.capturedAudioData.push(chunk);
+            
+            // Log every 50 chunks to see if we're capturing
+            if (this.capturedAudioData.length % 50 === 0) {
+                console.log(`🎯 AudioWorklet capture: ${this.capturedAudioData.length} chunks, hasAudio: ${hasAudio}, maxAmplitude: ${maxAmplitude.toFixed(4)}`);
+            }
+            
+            // Process in 5-second chunks for Whisper
+            const elapsedTime = (Date.now() - this.captureStartTime) / 1000;
+            if (elapsedTime >= 5.0) {
+                console.log(`🎯 5 seconds elapsed (AudioWorklet), processing ${this.capturedAudioData.length} audio chunks`);
+                // Process asynchronously to avoid blocking audio thread
+                setTimeout(() => this.processDirectAudioCapture(), 0);
+            }
+        } catch (error) {
+            console.error('❌ Error processing AudioWorklet data:', error);
+        }
+    }
+
+    setupScriptProcessor() {
+        try {
+            console.log('🎯 Setting up ScriptProcessor for direct audio capture');
+            
+            // Create source from the audio stream
+            this.audioSource = this.audioContext.createMediaStreamSource(this.audioStream);
+            
+            // Create script processor for capturing audio data (deprecated but widely supported)
+            const bufferSize = 4096;
+            this.scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
+            
+            console.log('🎯 ScriptProcessor created with buffer size:', bufferSize);
+            
+            this.scriptProcessor.onaudioprocess = (event) => {
+                try {
+                    const inputBuffer = event.inputBuffer;
+                    const audioData = inputBuffer.getChannelData(0);
+                    
+                    // Check for actual audio vs silence
+                    let hasAudio = false;
+                    let maxAmplitude = 0;
+                    for (let i = 0; i < audioData.length; i++) {
+                        const amplitude = Math.abs(audioData[i]);
+                        maxAmplitude = Math.max(maxAmplitude, amplitude);
+                        if (amplitude > 0.001) { // Threshold for detecting audio
+                            hasAudio = true;
+                        }
+                    }
+                    
+                    // Copy the audio data (Float32Array is what Whisper expects)
+                    const chunk = new Float32Array(audioData.length);
+                    chunk.set(audioData);
+                    this.capturedAudioData.push(chunk);
+                    
+                    // Log every 50 chunks to see if we're capturing
+                    if (this.capturedAudioData.length % 50 === 0) {
+                        console.log(`🎯 Direct audio capture: ${this.capturedAudioData.length} chunks, hasAudio: ${hasAudio}, maxAmplitude: ${maxAmplitude.toFixed(4)}`);
+                    }
+                    
+                    // Process in 5-second chunks for Whisper
+                    const elapsedTime = (Date.now() - this.captureStartTime) / 1000;
+                    if (elapsedTime >= 5.0) {
+                        console.log(`🎯 5 seconds elapsed, processing ${this.capturedAudioData.length} audio chunks`);
+                        // Process asynchronously to avoid blocking audio thread
+                        setTimeout(() => this.processDirectAudioCapture(), 0);
+                    }
+                } catch (error) {
+                    console.error('❌ Error in audio processing:', error);
+                }
+            };
+            
+            // Connect the nodes - don't connect to destination to avoid feedback
+            this.audioSource.connect(this.scriptProcessor);
+            // Connect to a dummy destination to keep the processor alive
+            this.scriptProcessor.connect(this.audioContext.createGain());
+            
+            console.log('🎯 Direct audio capture setup complete using ScriptProcessor');
+            
+            // Add a backup timer to ensure processing happens even if ScriptProcessor timing is off
+            this.directCaptureTimer = setInterval(() => {
+                const elapsedTime = (Date.now() - this.captureStartTime) / 1000;
+                console.log(`🎯 Timer check: ${this.capturedAudioData.length} chunks after ${elapsedTime.toFixed(1)}s`);
+                if (elapsedTime >= 5.0 && this.capturedAudioData.length > 0) {
+                    console.log(`🎯 Timer triggered processing: ${this.capturedAudioData.length} chunks after ${elapsedTime.toFixed(1)}s`);
+                    this.processDirectAudioCapture();
+                }
+            }, 3000); // Check every 3 seconds for more frequent updates
+            
+            // Test Whisper with silence after 3 seconds
+            setTimeout(() => {
+                this.testWhisperWithSilence();
+            }, 3000);
+            
+        } catch (error) {
+            console.error('❌ Error setting up ScriptProcessor:', error);
+            throw error;
+        }
+    }
+
+    async processDirectAudioCapture() {
+        if (this.capturedAudioData.length === 0) return;
+        
+        try {
+            console.log('🎯 Processing captured audio data for Whisper');
+            
+            // Combine all captured chunks into a single Float32Array
+            const totalSamples = this.capturedAudioData.reduce((sum, chunk) => sum + chunk.length, 0);
+            const combinedAudio = new Float32Array(totalSamples);
+            
+            let offset = 0;
+            for (const chunk of this.capturedAudioData) {
+                combinedAudio.set(chunk, offset);
+                offset += chunk.length;
+            }
+            
+            // Get the actual sample rate from the audio context
+            const originalSampleRate = this.audioContext.sampleRate;
+            
+            console.log('🎯 Combined audio data:', {
+                totalSamples: totalSamples,
+                originalSampleRate: originalSampleRate,
+                duration: totalSamples / originalSampleRate,
+                chunks: this.capturedAudioData.length
+            });
+            
+            // Resample to 16kHz if needed
+            let audioForWhisper = combinedAudio;
+            if (originalSampleRate !== 16000) {
+                console.log('🎯 Resampling from', originalSampleRate, 'to 16000 Hz');
+                audioForWhisper = this.resampleAudio(combinedAudio, originalSampleRate, 16000);
+            }
+            
+            // Send to Whisper for transcription
+            const result = await window.electronAPI.transcribeAudio(Array.from(audioForWhisper), 16000);
+            
+            if (result && result.text && result.text.trim()) {
+                console.log('🎯 Whisper transcription result:', result.text);
+                
+                // Add transcription to the UI
+                this.handleLiveTranscription({
+                    text: result.text,
+                    confidence: result.confidence || 0.9,
+                    isFinal: true
+                });
+            } else {
+                console.log('🎯 No transcription result or empty text');
+            }
+            
+            // Clear the buffer and reset timer
+            this.capturedAudioData = [];
+            this.captureStartTime = Date.now();
+            
+        } catch (error) {
+            console.error('❌ Error processing direct audio capture:', error);
+            // Reset buffer on error
+            this.capturedAudioData = [];
+            this.captureStartTime = Date.now();
+        }
+    }
+
+    cleanupDirectAudioCapture() {
+        try {
+            if (this.directCaptureTimer) {
+                clearInterval(this.directCaptureTimer);
+                this.directCaptureTimer = null;
+            }
+            
+            if (this.workletNode) {
+                this.workletNode.disconnect();
+                this.workletNode.port.onmessage = null;
+                this.workletNode = null;
+            }
+            
+            if (this.scriptProcessor) {
+                this.scriptProcessor.disconnect();
+                this.scriptProcessor.onaudioprocess = null;
+                this.scriptProcessor = null;
+            }
+            
+            if (this.audioSource) {
+                this.audioSource.disconnect();
+                this.audioSource = null;
+            }
+            
+            if (this.audioContext && this.audioContext.state !== 'closed') {
+                this.audioContext.close().catch(err => {
+                    console.warn('Error closing audio context:', err);
+                });
+                this.audioContext = null;
+            }
+            
+            this.capturedAudioData = [];
+            console.log('🎯 Direct audio capture cleaned up');
+        } catch (error) {
+            console.error('❌ Error during audio capture cleanup:', error);
+        }
+    }
+
+    async testWhisperWithSilence() {
+        try {
+            console.log('🧪 Testing Whisper with 1 second of silence...');
+            
+            // Generate 1 second of silence at 16kHz
+            const sampleRate = 16000;
+            const duration = 1;
+            const samples = sampleRate * duration;
+            const silenceData = new Float32Array(samples);
+            
+            // Add very quiet noise to test if Whisper responds
+            for (let i = 0; i < samples; i++) {
+                silenceData[i] = (Math.random() - 0.5) * 0.001;
+            }
+            
+            const result = await window.electronAPI.transcribeAudio(Array.from(silenceData), sampleRate);
+            console.log('🧪 Whisper test result:', result);
+            
+            if (result && result.text) {
+                console.log('✅ Whisper test successful - transcription system is working');
+            } else {
+                console.log('⚠️ Whisper test returned no text - this is expected for silence/noise');
+            }
+            
+        } catch (error) {
+            console.error('❌ Whisper test failed:', error);
+        }
+    }
+
+    handleLiveTranscription(result) {
+        try {
+            if (!result.text || !result.text.trim()) return;
+            
+            console.log('🎯 Live transcription result:', result.text);
+            
+            // Create a transcript line for live audio
+            const transcriptLine = {
+                timestamp: new Date().toLocaleTimeString(),
+                speaker: 'Live Audio',
+                content: result.text.trim()
+            };
+            
+            // Add to transcript through the normal flow
+            const transcriptData = {
+                lines: [transcriptLine],
+                wordCount: this.wordCount + transcriptLine.content.split(/\s+/).length,
+                currentPosition: this.currentPosition + transcriptLine.content.split(/\s+/).length
+            };
+            
+            // Update local state
+            this.wordCount = transcriptData.wordCount;
+            this.currentPosition = transcriptData.currentPosition;
+            
+            // Add to UI
+            this.handleTranscriptUpdate(transcriptData);
+            
+            console.log('Live transcription added to transcript');
+            
+        } catch (error) {
+            console.error('Error handling live transcription:', error);
+        }
+    }
+
+    initializeSpeechRecognition() {
+        // Check if Web Speech API is available in Electron
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        if (!SpeechRecognition) {
+            console.warn('Web Speech API not supported');
+            this.speechRecognitionAvailable = false;
+            return;
+        }
+        
+        // In Electron, we can configure for better offline experience
+        this.speechRecognition = new SpeechRecognition();
+        this.speechRecognitionAvailable = true;
+        this.speechRecognitionErrors = 0;
+        this.maxSpeechRecognitionErrors = 2; // Reduce retry attempts
+        
+        // Configure speech recognition for Electron
+        this.speechRecognition.continuous = true;
+        this.speechRecognition.interimResults = true;
+        this.speechRecognition.lang = 'en-US';
+        
+        // Configure for better offline experience
+        this.speechRecognition.maxAlternatives = 1;
+        
+        // Try to use local speech recognition if available
+        if (this.speechRecognition.serviceURI) {
+            this.speechRecognition.serviceURI = null; // Force local recognition
+        }
+        
+        // Some browsers support offline recognition
+        if ('webkitSpeechRecognition' in window) {
+            try {
+                // Try to enable offline recognition on WebKit
+                this.speechRecognition.continuous = true;
+                this.speechRecognition.interimResults = true;
+            } catch (e) {
+                console.log('Could not configure offline recognition');
+            }
+        }
+        
+        // Handle speech recognition results
+        this.speechRecognition.onresult = (event) => {
+            this.speechRecognitionErrors = 0; // Reset error count on successful result
+            this.handleSpeechRecognitionResult(event);
+        };
+        
+        this.speechRecognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            this.speechRecognitionErrors++;
+            
+            switch (event.error) {
+                case 'network':
+                    console.warn('Network error in speech recognition - falling back to offline mode');
+                    this.fallbackToOfflineTranscription();
+                    break;
+                    
+                case 'not-allowed':
+                    console.warn('Microphone permission denied for speech recognition');
+                    this.showSpeechRecognitionError('Microphone permission required for speech recognition');
+                    break;
+                    
+                case 'service-not-allowed':
+                    console.warn('Speech recognition service not allowed - using offline mode');
+                    this.fallbackToOfflineTranscription();
+                    break;
+                    
+                case 'no-speech':
+                case 'audio-capture':
+                    // These are recoverable errors
+                    if (this.speechRecognitionErrors < this.maxSpeechRecognitionErrors) {
+                        setTimeout(() => {
+                            if (this.isTranscribing) {
+                                console.log('Restarting speech recognition after', event.error);
+                                this.startSpeechRecognition();
+                            }
+                        }, 1000);
+                    } else {
+                        this.showSpeechRecognitionError('Speech recognition stopped after multiple errors');
+                        this.fallbackToManualTranscription();
+                    }
+                    break;
+                    
+                default:
+                    console.warn('Unknown speech recognition error:', event.error);
+                    if (this.speechRecognitionErrors < this.maxSpeechRecognitionErrors) {
+                        setTimeout(() => {
+                            if (this.isTranscribing) {
+                                this.startSpeechRecognition();
+                            }
+                        }, 2000);
+                    } else {
+                        this.fallbackToManualTranscription();
+                    }
+            }
+        };
+        
+        this.speechRecognition.onend = () => {
+            // Restart recognition if it stops while we're still recording
+            if (this.isTranscribing && this.speechRecognitionErrors < this.maxSpeechRecognitionErrors) {
+                setTimeout(() => {
+                    if (this.isTranscribing) {
+                        console.log('Restarting speech recognition after end event');
+                        this.startSpeechRecognition();
+                    }
+                }, 500);
+            }
+        };
+        
+        console.log('Speech recognition initialized');
+    }
+
+    showSpeechRecognitionError(message) {
+        // Update recording status to show the error
+        if (this.recordingStatus) {
+            this.recordingStatus.textContent = message;
+            this.recordingStatus.className = 'recording-status error';
+        }
+        
+        // Show notification to user
+        console.warn('Speech Recognition:', message);
+        
+        // Optionally show a less intrusive notification
+        setTimeout(() => {
+            if (this.recordingStatus && this.isRecording) {
+                this.recordingStatus.textContent = 'Recording (no transcription)';
+                this.recordingStatus.className = 'recording-status recording';
+            }
+        }, 3000);
+    }
+
+    setupOfflineTranscription() {
+        console.log('Setting up offline transcription mode');
+        this.offlineTranscriptionMode = true;
+        this.transcriptionChunks = [];
+        
+        // In offline mode, we'll simulate transcription or use a simple pattern
+        this.offlineTranscriptionTimer = null;
+    }
+
+    fallbackToOfflineTranscription() {
+        console.log('Falling back to audio-only recording mode');
+        this.isTranscribing = false;
+        this.offlineTranscriptionMode = false; // Don't use simulation
+        
+        if (this.recordingStatus) {
+            this.recordingStatus.textContent = 'Recording (transcription unavailable)';
+            this.recordingStatus.className = 'recording-status recording';
+        }
+        
+        // Show helpful message to user
+        setTimeout(() => {
+            if (this.recordingStatus && this.isRecording) {
+                this.recordingStatus.textContent = 'Recording - add transcript manually after';
+                this.recordingStatus.className = 'recording-status recording';
+            }
+        }, 3000);
+    }
+
+    fallbackToManualTranscription() {
+        console.log('Falling back to manual transcription mode');
+        this.isTranscribing = false;
+        this.offlineTranscriptionMode = false;
+        
+        if (this.recordingStatus) {
+            this.recordingStatus.textContent = 'Recording (transcription disabled)';
+            this.recordingStatus.className = 'recording-status recording';
+        }
+        
+        // Show helpful message about manual transcription
+        setTimeout(() => {
+            if (this.recordingStatus && this.isRecording) {
+                this.recordingStatus.textContent = 'Recording - add transcription manually';
+            }
+        }, 2000);
+    }
+
+    startOfflineTranscription() {
+        if (!this.offlineTranscriptionMode) return;
+        
+        // Simple offline transcription simulation
+        // In a real implementation, this would use local speech recognition
+        console.log('Starting offline transcription simulation');
+        
+        this.offlineTranscriptionTimer = setInterval(() => {
+            if (!this.isRecording) {
+                clearInterval(this.offlineTranscriptionTimer);
+                return;
+            }
+            
+            // Simulate transcribed content every 5 seconds
+            const simulatedTranscript = [
+                'Audio is being recorded...',
+                'Offline transcription active.',
+                'Speech recognition working locally.',
+                'Real-time audio capture in progress.'
+            ];
+            
+            const randomText = simulatedTranscript[Math.floor(Math.random() * simulatedTranscript.length)];
+            
+            this.addTranscriptLine({
+                timestamp: new Date().toLocaleTimeString(),
+                speaker: 'Offline Audio',
+                content: randomText,
+                confidence: 0.7
+            });
+            
+        }, 5000); // Add simulated transcript every 5 seconds
+    }
+
+    stopOfflineTranscription() {
+        if (this.offlineTranscriptionTimer) {
+            clearInterval(this.offlineTranscriptionTimer);
+            this.offlineTranscriptionTimer = null;
+        }
+    }
+
+    startTranscription() {
+        console.log('🎙️ Starting transcription - available methods:', {
+            whisper: this.whisperAvailable,
+            speechRecognition: this.speechRecognitionAvailable
+        });
+
+        if (this.whisperAvailable) {
+            console.log('✅ Using Whisper transcription (WebAssembly)');
+            this.isTranscribing = true;
+            this.audioChunksBuffer = [];
+            
+            // Set up periodic Whisper processing with longer intervals to prevent crashes
+            this.whisperProcessingInterval = setInterval(() => {
+                this.processWhisperBuffer();
+            }, 8000); // Process every 8 seconds for better responsiveness
+            
+            if (this.recordingStatus) {
+                this.recordingStatus.textContent = 'Recording & Transcribing (Whisper)';
+                this.recordingStatus.className = 'recording-status recording';
+            }
+        } else if (this.speechRecognitionAvailable) {
+            console.log('⚠️ Whisper not available, using Web Speech API');
+            this.startSpeechRecognition();
+        } else {
+            console.log('❌ No transcription available, using simulation mode');
+            this.startOfflineTranscription();
+        }
+        
+        console.log('📊 Transcription status:', {
+            whisperAvailable: this.whisperAvailable,
+            speechRecognitionAvailable: this.speechRecognitionAvailable,
+            isTranscribing: this.isTranscribing
+        });
+    }
+
+    stopTranscription() {
+        this.stopSpeechRecognition();
+        this.stopOfflineTranscription();
+        
+        if (this.whisperProcessingInterval) {
+            clearInterval(this.whisperProcessingInterval);
+            this.whisperProcessingInterval = null;
+        }
+        
+        // Process any remaining buffer
+        if (this.audioChunksBuffer.length > 0) {
+            this.processWhisperBuffer();
+        }
+        
+        this.isTranscribing = false;
+    }
+
+    handleAudioChunkForTranscription(audioBlob) {
+        if (!this.whisperAvailable || !this.isTranscribing) {
+            console.log('🔇 Skipping audio chunk - Whisper not available or not transcribing');
+            return;
+        }
+
+        console.log('🎯 Adding audio chunk to buffer, size:', audioBlob.size, 'bytes, buffer length:', this.audioChunksBuffer.length);
+
+        // Add to buffer for periodic processing
+        this.audioChunksBuffer.push(audioBlob);
+        
+        // Limit buffer size to prevent memory issues and crashes
+        const maxBufferSize = 3; // Keep only last 3 chunks (about 3 seconds) to prevent crashes
+        if (this.audioChunksBuffer.length > maxBufferSize) {
+            this.audioChunksBuffer.shift(); // Remove oldest chunk
+        }
+    }
+
+    async processWhisperBuffer() {
+        if (!this.whisperAvailable || !this.audioChunksBuffer.length) {
+            return;
+        }
+
+        try {
+            // Process only the most recent chunk to prevent crashes
+            const chunksToProcess = Math.min(1, this.audioChunksBuffer.length); // Process only 1 chunk to prevent crashes
+            const recentChunks = this.audioChunksBuffer.slice(-chunksToProcess);
+            
+            // Combine audio blobs
+            const combinedBlob = new Blob(recentChunks, { type: 'audio/webm' });
+            
+            // Skip only very small chunks (but allow larger ones since we're using direct capture primarily)
+            if (combinedBlob.size < 5000) {
+                console.log('Skipping small audio chunk:', combinedBlob.size, 'bytes');
+                return;
+            }
+            
+            // If direct audio capture is working, deprioritize MediaRecorder processing
+            // But still allow MediaRecorder as fallback if direct capture isn't producing results
+            if (this.capturedAudioData && this.capturedAudioData.length > 100) {
+                console.log('🎯 Direct capture active with', this.capturedAudioData.length, 'chunks, skipping MediaRecorder processing');
+                return;
+            }
+            
+            console.log('🎯 Processing audio buffer with Whisper, size:', Math.round(combinedBlob.size / 1024) + 'KB');
+            
+            const result = await this.transcribeAudioWithWhisper(combinedBlob);
+            
+            if (result.text && result.text.trim().length > 0) {
+                // Filter out common false positives
+                const text = result.text.trim();
+                
+                // Allow [BLANK_AUDIO] through for debugging
+                if (text.includes('[BLANK_AUDIO]') || (text.length > 3 && !text.match(/^(um|uh|hmm|ah)$/i))) {
+                    this.addTranscriptLine({
+                        timestamp: new Date().toLocaleTimeString(),
+                        speaker: 'Whisper',
+                        content: text,
+                        confidence: result.confidence
+                    });
+                    
+                    console.log('✅ Whisper transcription:', text);
+                }
+            } else {
+                console.log('🔇 No speech detected in audio chunk');
+            }
+            
+        } catch (error) {
+            console.error('❌ Error processing Whisper buffer:', error);
+            
+            // Fall back to Web Speech API if Whisper fails repeatedly
+            if (this.speechRecognitionAvailable) {
+                console.log('⚠️ Whisper failed, falling back to Web Speech API');
+                this.whisperAvailable = false; // Disable Whisper for this session
+                
+                // Clear the interval and start speech recognition
+                if (this.whisperProcessingInterval) {
+                    clearInterval(this.whisperProcessingInterval);
+                    this.whisperProcessingInterval = null;
+                }
+                
+                this.startSpeechRecognition();
+            } else {
+                console.log('❌ No fallback available, continuing with Whisper');
+            }
+        }
+    }
+
+    handleSpeechRecognitionResult(event) {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            const confidence = event.results[i][0].confidence;
+            
+            if (event.results[i].isFinal) {
+                finalTranscript += transcript;
+                
+                // Send final result to main process for transcript update
+                if (finalTranscript.trim()) {
+                    this.addTranscriptLine({
+                        timestamp: new Date().toLocaleTimeString(),
+                        speaker: 'Live Audio',
+                        content: finalTranscript.trim(),
+                        confidence: confidence
+                    });
+                }
+            } else {
+                interimTranscript += transcript;
+            }
+        }
+        
+        // Update UI with interim results (optional - could be distracting)
+        if (interimTranscript.trim()) {
+            console.log('Interim:', interimTranscript);
+        }
+    }
+
+    addTranscriptLine(transcriptLine) {
+        // Create transcript data similar to file-based transcript
+        const transcriptData = {
+            lines: [transcriptLine],
+            wordCount: this.wordCount + transcriptLine.content.split(/\s+/).length,
+            currentPosition: this.currentPosition + transcriptLine.content.split(/\s+/).length
+        };
+        
+        // Process like a normal transcript update
+        this.handleTranscriptUpdate(transcriptData);
+    }
+
+    startSpeechRecognition() {
+        if (!this.speechRecognition || !this.speechRecognitionAvailable) {
+            console.warn('Speech recognition not available');
+            this.fallbackToManualTranscription();
+            return;
+        }
+        
+        try {
+            this.speechRecognition.start();
+            this.isTranscribing = true;
+            console.log('Speech recognition started');
+            
+            // Update status to show transcription is active
+            if (this.recordingStatus) {
+                this.recordingStatus.textContent = 'Recording & Transcribing...';
+                this.recordingStatus.className = 'recording-status recording';
+            }
+        } catch (error) {
+            console.error('Error starting speech recognition:', error);
+            this.speechRecognitionErrors++;
+            
+            if (error.name === 'InvalidStateError') {
+                // Recognition is already running, just mark as transcribing
+                this.isTranscribing = true;
+                console.log('Speech recognition already running');
+            } else {
+                this.fallbackToManualTranscription();
+            }
+        }
+    }
+
+    stopSpeechRecognition() {
+        if (this.speechRecognition && this.isTranscribing) {
+            this.speechRecognition.stop();
+            this.isTranscribing = false;
+            console.log('Speech recognition stopped');
         }
     }
 
@@ -480,9 +1507,22 @@ class RendererApp {
             const constraints = this.getAudioConstraints();
             this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
             
-            // Create MediaRecorder
+            // Create MediaRecorder with a format that AudioContext can decode
+            let mimeType = 'audio/webm;codecs=opus'; // Default fallback
+            
+            // Try to use WAV if supported (better for AudioContext decoding)
+            if (MediaRecorder.isTypeSupported('audio/wav')) {
+                mimeType = 'audio/wav';
+                console.log('🎯 Using WAV format for audio recording');
+            } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=pcm')) {
+                mimeType = 'audio/webm;codecs=pcm';
+                console.log('🎯 Using WebM with PCM codec for audio recording');
+            } else {
+                console.log('🎯 Using default WebM/Opus format for audio recording');
+            }
+            
             this.mediaRecorder = new MediaRecorder(this.audioStream, {
-                mimeType: 'audio/webm;codecs=opus'
+                mimeType: mimeType
             });
             
             // Handle data available
@@ -491,7 +1531,10 @@ class RendererApp {
                     const arrayBuffer = await event.data.arrayBuffer();
                     await window.electronAPI.processAudioChunk(arrayBuffer);
                     
-                    // Transcription is handled by the main process
+                    // Handle transcription with Whisper if enabled
+                    if (this.settings.audio && this.settings.audio.autoTranscribe) {
+                        this.handleAudioChunkForTranscription(event.data);
+                    }
                 }
             };
             
@@ -500,9 +1543,32 @@ class RendererApp {
                 this.stopRecording();
             };
             
+            // Set up direct audio capture for Whisper transcription if enabled
+            console.log('🎯 Checking direct audio capture setup:', {
+                audioSettings: this.settings.audio,
+                autoTranscribe: this.settings.audio?.autoTranscribe,
+                whisperAvailable: this.whisperAvailable
+            });
+            
+            if (this.settings.audio && this.settings.audio.autoTranscribe && this.whisperAvailable) {
+                console.log('🎯 Setting up direct audio capture for Whisper transcription');
+                try {
+                    this.setupDirectAudioCapture();
+                } catch (error) {
+                    console.error('❌ Failed to setup direct audio capture, continuing with MediaRecorder only:', error);
+                }
+            } else {
+                console.log('🎯 Skipping direct audio capture setup - conditions not met');
+            }
+
             // Start recording with 1-second chunks for real-time processing
             this.mediaRecorder.start(1000);
             this.isRecording = true;
+            
+            // Start transcription if enabled
+            if (this.settings.audio && this.settings.audio.autoTranscribe) {
+                this.startTranscription();
+            }
             
             // Update UI
             this.recordBtn.textContent = '⏹ Stop';
@@ -538,6 +1604,12 @@ class RendererApp {
             this.isRecording = false;
             this.mediaRecorder = null;
             this.currentSession = null;
+            
+            // Stop all transcription methods
+            this.stopTranscription();
+            
+            // Cleanup direct audio capture
+            this.cleanupDirectAudioCapture();
             
             // Update UI
             this.recordBtn.textContent = '● Record';

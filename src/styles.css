@@ -118,6 +118,11 @@ body {
     color: #ffc107;
 }
 
+.recording-status.error {
+    color: #dc3545;
+    font-weight: bold;
+}
+
 .transcript-content {
     flex: 1;
     padding: 16px;

@@ -33,6 +33,7 @@ class RendererApp {
             out: null  // Word index for OUT marker
         };
         this.lastClickedWord = null;
+        this.transcriptMetadata = null; // Metadata for transcript segments
         this.notesLoaded = false; // Flag to prevent autosave until notes are loaded
         
         // Virtual scrolling properties
@@ -98,6 +99,7 @@ class RendererApp {
         this.timeline = document.getElementById('timeline');
         this.timelineCursor = document.getElementById('timeline-cursor');
         this.noteMarkers = document.getElementById('note-markers');
+        this.segmentMarkers = document.getElementById('segment-markers');
         this.contextLimitArea = document.getElementById('context-limit-area');
         this.selectionArea = document.getElementById('selection-area');
         this.inMarker = document.getElementById('in-marker');
@@ -807,7 +809,7 @@ class RendererApp {
             
             // Create a transcript line for live audio
             const transcriptLine = {
-                timestamp: new Date().toLocaleTimeString(),
+                timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
                 speaker: 'Live Audio',
                 content: result.text.trim()
             };
@@ -1203,7 +1205,7 @@ class RendererApp {
                 // Send final result to main process for transcript update
                 if (finalTranscript.trim()) {
                     this.addTranscriptLine({
-                        timestamp: new Date().toLocaleTimeString(),
+                        timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
                         speaker: 'Live Audio',
                         content: finalTranscript.trim(),
                         confidence: confidence
@@ -1705,9 +1707,32 @@ class RendererApp {
 
     // Transcript handling
     handleTranscriptUpdate(data) {
-        const { lines, wordCount, currentPosition } = data;
+        const { lines, wordCount, currentPosition, metadata } = data;
         
-        // Add new lines with animation
+        // Handle metadata if provided
+        if (metadata) {
+            this.transcriptMetadata = metadata;
+            console.log(`Received metadata with ${metadata.segments.length} segments`);
+            
+            // If this is the initial load with metadata, reconstruct segments
+            if (this.transcriptLines.length === 0 && metadata.segments.length > 0) {
+                this.reconstructTranscriptFromSegments(lines, metadata);
+                this.wordCount = wordCount;
+                this.currentPosition = currentPosition;
+                this.updateTimeline();
+                this.updateWordCountDisplay();
+                this.updateContextLimitHighlighting();
+                this.updateTimelineContextLimit();
+                this.updateContextMarkersDisplay();
+                this.updateContextHighlighting();
+                this.renderSegmentMarkers();
+                return;
+            }
+            
+            this.renderSegmentMarkers();
+        }
+        
+        // Add new lines with animation (for live updates)
         lines.forEach((line, index) => {
             // Create a unique identifier for duplicate checking
             const lineId = line.timestamp + '|' + line.speaker + '|' + line.content.substring(0, 50);
@@ -1719,6 +1744,30 @@ class RendererApp {
                 // Add word position information for selection
                 line.wordIndex = this.transcriptLines.reduce((acc, curr) => acc + curr.content.split(/\s+/).length, 0);
                 line.wordCount = line.content.split(/\s+/).length;
+                
+                // If we have updated metadata with new segments, find the matching segment
+                if (metadata && metadata.segments.length > 0) {
+                    // Find the segment that contains this line's word range
+                    const matchingSegment = metadata.segments.find(segment => 
+                        line.wordIndex >= segment.startWordIndex && 
+                        line.wordIndex <= segment.endWordIndex
+                    );
+                    
+                    if (matchingSegment) {
+                        // Use segment timestamp and set proper speaker
+                        line.timestamp = new Date(matchingSegment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+                        line.speaker = matchingSegment.source === 'live-transcription' ? 'Live Audio' : 'Speaker';
+                    }
+                } else {
+                    // Fallback: ensure timestamp is in 24-hour format
+                    if (!line.timestamp || !line.timestamp.match(/^\d{2}:\d{2}:\d{2}$/)) {
+                        line.timestamp = new Date().toLocaleTimeString('en-GB', { hour12: false });
+                    }
+                    // Ensure speaker is set
+                    if (!line.speaker) {
+                        line.speaker = 'Live Audio';
+                    }
+                }
                 
                 this.transcriptLines.push(line);
                 this.addTranscriptLine(line, true); // true for animation
@@ -1733,6 +1782,7 @@ class RendererApp {
         this.updateTimelineContextLimit();
         this.updateContextMarkersDisplay();
         this.updateContextHighlighting();
+        this.renderSegmentMarkers();
     }
 
     addTranscriptLine(line, animate = false) {
@@ -1751,6 +1801,8 @@ class RendererApp {
             wordSpan.className = 'word';
             wordSpan.dataset.wordIndex = line.wordIndex + index;
             wordSpan.textContent = word;
+            
+            // Segment styling will be applied at the line level
             
             // Add selection event listeners to each word
             wordSpan.addEventListener('mousedown', (e) => this.startTranscriptSelection(e, line.wordIndex + index));
@@ -3230,6 +3282,103 @@ class RendererApp {
         // This function should trigger an update of the context preview
         // The actual context selection logic will be updated separately
         this.updateSelectionStatus();
+    }
+
+    renderSegmentMarkers() {
+        if (!this.transcriptMetadata || !this.segmentMarkers) return;
+        
+        // Clear existing segment markers
+        this.segmentMarkers.innerHTML = '';
+        
+        if (this.wordCount === 0) return;
+        
+        // Render each segment as a visual marker on the timeline
+        this.transcriptMetadata.segments.forEach((segment, index) => {
+            const markerElement = document.createElement('div');
+            markerElement.className = 'segment-marker';
+            markerElement.dataset.segmentId = segment.id;
+            markerElement.dataset.source = segment.source;
+            
+            // Calculate position based on start word index
+            const positionPercent = (segment.startWordIndex / this.wordCount) * 100;
+            markerElement.style.left = `${positionPercent}%`;
+            
+            // Set visual style based on source
+            if (segment.source === 'initial-load') {
+                markerElement.classList.add('segment-initial');
+            } else if (segment.source === 'live-transcription') {
+                markerElement.classList.add('segment-live');
+            }
+            
+            // Add tooltip with segment info
+            const timestamp = new Date(segment.timestamp).toLocaleTimeString();
+            const wordRange = `${segment.startWordIndex}-${segment.endWordIndex}`;
+            markerElement.title = `Segment ${index + 1}\nTime: ${timestamp}\nWords: ${wordRange}\nSource: ${segment.source}`;
+            
+            this.segmentMarkers.appendChild(markerElement);
+        });
+        
+        // Segments are reconstructed with default appearance - no additional highlighting needed
+        
+        console.log(`Rendered ${this.transcriptMetadata.segments.length} segment markers`);
+    }
+
+
+    reconstructTranscriptFromSegments(allLines, metadata) {
+        console.log('Reconstructing transcript from segments...');
+        
+        // Clear existing transcript content
+        this.transcriptContent.innerHTML = '';
+        this.transcriptLines = [];
+        
+        // Get all words from all lines to work with word indices
+        const allWords = [];
+        const wordToLineMap = []; // Maps word index to original line info
+        
+        allLines.forEach(line => {
+            const words = line.content.split(/\s+/).filter(word => word.length > 0);
+            words.forEach(word => {
+                allWords.push(word);
+                wordToLineMap.push({
+                    originalLine: line,
+                    wordIndexInLine: allWords.length - 1 - (allWords.length - words.length)
+                });
+            });
+        });
+        
+        // Reconstruct segments as separate transcript sections
+        metadata.segments.forEach((segment, segmentIndex) => {
+            const segmentWords = allWords.slice(segment.startWordIndex, segment.endWordIndex + 1);
+            
+            if (segmentWords.length > 0) {
+                // Get the original line info for the first word in this segment
+                const firstWordInfo = wordToLineMap[segment.startWordIndex];
+                const originalLine = firstWordInfo.originalLine;
+                
+                // Create a segment line with the segment's words
+                // Use metadata timestamp in 24-hour format
+                const metadataTimestamp = new Date(segment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+                
+                const segmentLine = {
+                    timestamp: metadataTimestamp,
+                    speaker: originalLine.speaker || (segment.source === 'live-transcription' ? 'Live Audio' : 'Speaker'),
+                    content: segmentWords.join(' '),
+                    wordIndex: segment.startWordIndex,
+                    wordCount: segmentWords.length,
+                    segmentSource: segment.source,
+                    segmentId: segment.id
+                };
+                
+                this.transcriptLines.push(segmentLine);
+                
+                // Add the line - all segments get identical treatment and appearance
+                this.addTranscriptLine(segmentLine, false); // No animation for reconstruction
+                
+                // No special styling - all segments should look identical to default appearance
+            }
+        });
+        
+        console.log(`Reconstructed ${metadata.segments.length} segments`);
     }
 
     formatText(command, value = null) {

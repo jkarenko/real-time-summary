@@ -1099,12 +1099,18 @@ class ElectronTranscriptApp {
         }
     }
 
-    sendTranscriptUpdate(lines, wordCount, currentPosition) {
-        this.sendToRenderer('transcript-update', {
+    sendTranscriptUpdate(lines, wordCount, currentPosition, metadata = null) {
+        const updateData = {
             lines,
             wordCount,
             currentPosition
-        });
+        };
+        
+        if (metadata) {
+            updateData.metadata = metadata;
+        }
+        
+        this.sendToRenderer('transcript-update', updateData);
     }
 
     sendScreenshotsUpdate(filter = null) {
@@ -1158,10 +1164,11 @@ class ElectronTranscriptApp {
             const lines = this.summarizer.parseTranscriptToLines();
             const wordCount = this.summarizer.getWordCount();
             const currentPosition = this.summarizer.lastPosition;
+            const metadata = this.summarizer.metadata;
             
-            console.log(`Sending ${lines.length} transcript lines to renderer`);
+            console.log(`Sending ${lines.length} transcript lines and ${metadata.segments.length} segments to renderer`);
             
-            this.sendTranscriptUpdate(lines, wordCount, currentPosition);
+            this.sendTranscriptUpdate(lines, wordCount, currentPosition, metadata);
         } catch (error) {
             console.error('Error sending existing transcript content:', error);
         }
@@ -1433,37 +1440,42 @@ class ElectronTranscriptSummarizer extends TranscriptSummarizer {
         try {
             const stats = fs.statSync(this.filePath);
             if (stats.size > this.lastPosition) {
-                const stream = fs.createReadStream(this.filePath, {
-                    start: this.lastPosition,
-                    end: stats.size
-                });
+                const oldPosition = this.lastPosition;
+                
+                // First call the parent method to handle segment creation
+                await super.processNewContent();
+                
+                // Now read the new content that was just processed
+                if (stats.size > oldPosition) {
+                    const stream = fs.createReadStream(this.filePath, {
+                        start: oldPosition,
+                        end: stats.size
+                    });
 
-                let newContent = '';
-                stream.on('data', (chunk) => {
-                    newContent += chunk.toString();
-                });
+                    let newContent = '';
+                    stream.on('data', (chunk) => {
+                        newContent += chunk.toString();
+                    });
 
-                stream.on('end', async () => {
-                    const trimmedContent = newContent.trim();
-                    
-                    if (trimmedContent) {
-                        console.log(`\n📝 New transcript content (${newContent.length} chars):`);
-                        console.log(trimmedContent);
+                    stream.on('end', async () => {
+                        const trimmedContent = newContent.trim();
                         
-                        this.pendingContent += ' ' + trimmedContent;
-                        this.lastPosition = stats.size;
-                        
-                        // Send only the new lines to renderer for animation
-                        const newLines = this.parseNewContent(trimmedContent);
-                        if (newLines.length > 0 && this.electronApp) {
-                            this.electronApp.sendTranscriptUpdate(
-                                newLines,
-                                this.getWordCount(),
-                                this.lastPosition
-                            );
+                        if (trimmedContent) {
+                            console.log(`\n📝 Sending new transcript content to renderer (${newContent.length} chars)`);
+                            
+                            // Send only the new lines to renderer for animation
+                            const newLines = this.parseNewContent(trimmedContent);
+                            if (newLines.length > 0 && this.electronApp) {
+                                this.electronApp.sendTranscriptUpdate(
+                                    newLines,
+                                    this.getWordCount(),
+                                    this.lastPosition,
+                                    this.metadata // Include metadata with segments
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
         } catch (error) {
             console.error('Error processing new content:', error.message);

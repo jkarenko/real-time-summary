@@ -291,6 +291,8 @@ body {
     background-color: rgba(40, 167, 69, 0.15); /* IN/OUT range takes priority over context limit */
 }
 
+/* Segments are reconstructed with default appearance - no special styling needed */
+
 @keyframes cursor-pulse {
     0% { transform: scale(1); }
     50% { transform: scale(1.1); }
@@ -684,6 +686,41 @@ body {
     border-radius: 20px;
     display: none;
     z-index: 2; /* Above context-limit-area, below selection area */
+}
+
+/* Segment Markers */
+.segment-markers {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+}
+
+.segment-marker {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    cursor: pointer;
+    z-index: 5;
+    transition: all 0.2s ease;
+}
+
+.segment-marker.segment-initial {
+    background: #6c757d; /* Gray for initial segments */
+    border-left: 2px solid #495057;
+}
+
+.segment-marker.segment-live {
+    background: #17a2b8; /* Teal for live transcription segments */
+    border-left: 2px solid #138496;
+}
+
+.segment-marker:hover {
+    width: 4px;
+    transform: translateX(-1px);
+    opacity: 0.8;
 }
 
 /* Row 3: Notes */

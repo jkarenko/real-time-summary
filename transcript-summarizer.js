@@ -11,6 +11,7 @@ class TranscriptSummarizer {
         this.summaryFilePath = this.getSummaryFilePath(filePath);
         this.notesFilePath = this.getNotesFilePath(filePath);
         this.compactedFilePath = this.getCompactedFilePath(filePath);
+        this.metadataFilePath = this.getMetadataFilePath(filePath);
         this.lastPosition = 0;
         this.currentSummary = '';
         this.pendingContent = '';
@@ -39,6 +40,15 @@ class TranscriptSummarizer {
         this.screenshotPageSize = 20; // Screenshots per page
         this.currentScreenshotPage = 0; // Current page for screenshot menu
         this.contextWordLimit = 0; // Word limit for ASK/NOTE commands (0 = no limit)
+        
+        // Metadata and segmentation
+        this.metadata = {
+            transcriptFile: path.basename(filePath),
+            segments: [],
+            lastModified: new Date().toISOString(),
+            version: "1.0"
+        };
+        this.lastKnownWordCount = 0; // Track word count for delta detection
     }
 
     getSummaryFilePath(transcriptPath) {
@@ -57,6 +67,88 @@ class TranscriptSummarizer {
         const dir = path.dirname(transcriptPath);
         const basename = path.basename(transcriptPath, path.extname(transcriptPath));
         return path.join(dir, `${basename}_compacted.txt`);
+    }
+
+    getMetadataFilePath(transcriptPath) {
+        const dir = path.dirname(transcriptPath);
+        const basename = path.basename(transcriptPath, path.extname(transcriptPath));
+        return path.join(dir, `${basename}.meta.json`);
+    }
+
+    loadMetadata() {
+        try {
+            if (fs.existsSync(this.metadataFilePath)) {
+                const metadataContent = fs.readFileSync(this.metadataFilePath, 'utf8');
+                this.metadata = JSON.parse(metadataContent);
+                console.log(`Loaded metadata with ${this.metadata.segments.length} segments`);
+            } else {
+                console.log('No existing metadata file found, starting fresh');
+                // Initialize with empty metadata structure
+                this.metadata = {
+                    transcriptFile: path.basename(this.filePath),
+                    segments: [],
+                    lastModified: new Date().toISOString(),
+                    version: "1.0"
+                };
+            }
+        } catch (error) {
+            console.error('Error loading metadata:', error);
+            // Fallback to empty metadata
+            this.metadata = {
+                transcriptFile: path.basename(this.filePath),
+                segments: [],
+                lastModified: new Date().toISOString(),
+                version: "1.0"
+            };
+        }
+    }
+
+    saveMetadata() {
+        try {
+            this.metadata.lastModified = new Date().toISOString();
+            const metadataJson = JSON.stringify(this.metadata, null, 2);
+            fs.writeFileSync(this.metadataFilePath, metadataJson, 'utf8');
+            console.log('Metadata saved successfully');
+        } catch (error) {
+            console.error('Error saving metadata:', error);
+        }
+    }
+
+    addSegment(startWordIndex, endWordIndex, source = 'unknown') {
+        const segmentId = `segment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const segment = {
+            id: segmentId,
+            startWordIndex,
+            endWordIndex,
+            timestamp: new Date().toISOString(),
+            source
+        };
+        
+        this.metadata.segments.push(segment);
+        this.saveMetadata();
+        
+        console.log(`Added segment: ${segmentId} (${startWordIndex}-${endWordIndex}, source: ${source})`);
+        return segment;
+    }
+
+    initializeWordCount() {
+        try {
+            // Read the entire current transcript to count words
+            const currentContent = fs.readFileSync(this.filePath, 'utf8');
+            const words = currentContent.split(/\s+/).filter(word => word.length > 0);
+            this.lastKnownWordCount = words.length;
+            
+            console.log(`Initialized word count: ${this.lastKnownWordCount} words`);
+            
+            // If we don't have any segments yet and the file has content, create an initial segment
+            if (this.metadata.segments.length === 0 && words.length > 0) {
+                this.addSegment(0, words.length - 1, 'initial-load');
+                console.log('Created initial segment for existing transcript content');
+            }
+        } catch (error) {
+            console.error('Error initializing word count:', error);
+            this.lastKnownWordCount = 0;
+        }
     }
 
     loadExistingSummary() {
@@ -582,6 +674,8 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
 
         this.loadExistingSummary();
         this.loadOrCreateNotesFile();
+        this.loadMetadata();
+        this.initializeWordCount();
         
         this.lastPosition = fs.statSync(this.filePath).size;
         console.log(`Starting from position: ${this.lastPosition}`);
@@ -613,6 +707,17 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
                     if (trimmedContent) {
                         console.log(`\n📝 New transcript content (${newContent.length} chars):`);
                         console.log(trimmedContent);
+                        
+                        // Calculate word indices for the new segment
+                        const newWords = trimmedContent.split(/\s+/).filter(word => word.length > 0);
+                        const startWordIndex = this.lastKnownWordCount;
+                        const endWordIndex = this.lastKnownWordCount + newWords.length - 1;
+                        
+                        // Add segment for the new content
+                        if (newWords.length > 0) {
+                            this.addSegment(startWordIndex, endWordIndex, 'live-transcription');
+                            this.lastKnownWordCount = endWordIndex + 1;
+                        }
                         
                         this.pendingContent += ' ' + trimmedContent;
                         this.lastPosition = stats.size;

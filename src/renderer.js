@@ -28,6 +28,11 @@ class RendererApp {
             end: null,
             active: false
         };
+        this.contextMarkers = {
+            in: null,  // Word index for IN marker
+            out: null  // Word index for OUT marker
+        };
+        this.lastClickedWord = null;
         this.notesLoaded = false; // Flag to prevent autosave until notes are loaded
         
         // Virtual scrolling properties
@@ -95,6 +100,9 @@ class RendererApp {
         this.noteMarkers = document.getElementById('note-markers');
         this.contextLimitArea = document.getElementById('context-limit-area');
         this.selectionArea = document.getElementById('selection-area');
+        this.inMarker = document.getElementById('in-marker');
+        this.outMarker = document.getElementById('out-marker');
+        this.inOutRangeArea = document.getElementById('in-out-range-area');
 
         // Button elements
         this.summarizeBtn = document.getElementById('summarize-btn');
@@ -1723,6 +1731,8 @@ class RendererApp {
         this.updateWordCountDisplay();
         this.updateContextLimitHighlighting();
         this.updateTimelineContextLimit();
+        this.updateContextMarkersDisplay();
+        this.updateContextHighlighting();
     }
 
     addTranscriptLine(line, animate = false) {
@@ -2110,6 +2120,9 @@ class RendererApp {
         e.preventDefault();
         e.stopPropagation();
         
+        // Track the last clicked word for IN/OUT marker placement
+        this.lastClickedWord = wordIndex;
+        
         this.selectedRange.start = wordIndex;
         this.selectedRange.end = wordIndex;
         this.selectedRange.active = true;
@@ -2160,11 +2173,12 @@ class RendererApp {
             return;
         }
         
-        // Hide context highlighting and timeline indicator when there's a selection
+        // Hide context highlighting and timeline indicators when there's a selection
         document.querySelectorAll('.word').forEach(el => {
-            el.classList.remove('context-limit', 'context-limit-end');
+            el.classList.remove('context-limit', 'context-limit-end', 'in-out-range', 'in-out-range-end');
         });
         this.contextLimitArea.style.display = 'none';
+        this.inOutRangeArea.style.display = 'none';
         
         const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
         const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
@@ -2232,24 +2246,72 @@ class RendererApp {
         this.updateSelectionStatus();
         this.updateContextLimitHighlighting();
         this.updateTimelineContextLimit(); // Show context highlighting when no selection
+        this.updateContextMarkersDisplay();
+        this.updateContextHighlighting();
     }
 
     updateSelectionStatus() {
-        // Update UI to show current selection status for note context
+        // Update UI to show current selection status for note context using priority hierarchy
         const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
         
+        let startWord = null;
+        let endWord = null;
+        let contextType = null;
+        
         if (hasSelection) {
-            const wordCount = Math.abs(this.selectedRange.end - this.selectedRange.start) + 1;
-            const startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
-            const endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
-            
-            // Update note header placeholder to show context
-            if (this.noteHeaderInput) {
-                this.noteHeaderInput.placeholder = `Note about selection (${wordCount} words: ${startWord}-${endWord})`;
+            // Priority 1: Highlighted selection
+            startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
+            endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
+            contextType = 'selection';
+        } else if (this.contextMarkers.in !== null || this.contextMarkers.out !== null) {
+            // Priority 2: IN/OUT markers
+            if (this.contextMarkers.in !== null && this.contextMarkers.out !== null) {
+                startWord = Math.min(this.contextMarkers.in, this.contextMarkers.out);
+                endWord = Math.max(this.contextMarkers.in, this.contextMarkers.out);
+                contextType = 'in-out-markers';
+            } else if (this.contextMarkers.in !== null) {
+                startWord = this.contextMarkers.in;
+                endWord = this.wordCount - 1;
+                contextType = 'in-marker';
+            } else if (this.contextMarkers.out !== null) {
+                startWord = 0;
+                endWord = this.contextMarkers.out;
+                contextType = 'out-marker';
             }
-        } else {
-            // Reset to default placeholder
-            if (this.noteHeaderInput) {
+        } else if (this.settings.wordLimit > 0 && this.wordCount > this.settings.wordLimit) {
+            // Priority 3: Word limit (last N words)
+            startWord = this.wordCount - this.settings.wordLimit;
+            endWord = this.wordCount - 1;
+            contextType = 'word-limit';
+        }
+        
+        // Update note header placeholder to show context
+        if (this.noteHeaderInput) {
+            if (startWord !== null && endWord !== null) {
+                const wordCount = endWord - startWord + 1;
+                let placeholderText = '';
+                
+                switch (contextType) {
+                    case 'selection':
+                        placeholderText = `Note about selection (${wordCount} words: ${startWord}-${endWord})`;
+                        break;
+                    case 'in-out-markers':
+                        placeholderText = `Note about IN-OUT range (${wordCount} words: ${startWord}-${endWord})`;
+                        break;
+                    case 'in-marker':
+                        placeholderText = `Note from IN marker to end (${wordCount} words: ${startWord}-${endWord})`;
+                        break;
+                    case 'out-marker':
+                        placeholderText = `Note from start to OUT marker (${wordCount} words: ${startWord}-${endWord})`;
+                        break;
+                    case 'word-limit':
+                        placeholderText = `Note about last ${this.settings.wordLimit} words (${wordCount} words: ${startWord}-${endWord})`;
+                        break;
+                }
+                
+                this.noteHeaderInput.placeholder = placeholderText;
+            } else {
+                // No context defined - full transcript
                 this.noteHeaderInput.placeholder = 'e.g., Architecture Decisions, Action Items...';
             }
         }
@@ -2261,9 +2323,10 @@ class RendererApp {
             el.classList.remove('context-limit', 'context-limit-end');
         });
         
-        // Apply context limit highlighting if word limit is set and no specific range is selected
+        // Apply context limit highlighting if word limit is set and no specific range is selected AND no IN/OUT markers
         const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
-        if (this.settings.wordLimit > 0 && !hasSelection && this.wordCount > 0) {
+        const hasMarkers = this.contextMarkers.in !== null || this.contextMarkers.out !== null;
+        if (this.settings.wordLimit > 0 && !hasSelection && !hasMarkers && this.wordCount > 0) {
             const totalWords = this.wordCount;
             
             if (totalWords > this.settings.wordLimit) {
@@ -2290,9 +2353,10 @@ class RendererApp {
         // Hide context limit area by default
         this.contextLimitArea.style.display = 'none';
         
-        // Show context limit area if word limit is set and no specific range is selected
+        // Show context limit area if word limit is set and no specific range is selected AND no IN/OUT markers
         const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
-        if (this.settings.wordLimit > 0 && !hasSelection && this.wordCount > 0) {
+        const hasMarkers = this.contextMarkers.in !== null || this.contextMarkers.out !== null;
+        if (this.settings.wordLimit > 0 && !hasSelection && !hasMarkers && this.wordCount > 0) {
             const totalWords = this.wordCount;
             
             if (totalWords > this.settings.wordLimit) {
@@ -2341,15 +2405,37 @@ class RendererApp {
             return;
         }
 
-        // Use selected range if available, otherwise use full transcript
+        // Determine context using priority hierarchy: Selection > IN/OUT markers > Word limit
         let startWordIndex = null;
         let endWordIndex = null;
         
         if (this.selectedRange.start !== null && this.selectedRange.end !== null) {
+            // Priority 1: Highlighted selection
             startWordIndex = Math.min(this.selectedRange.start, this.selectedRange.end);
             endWordIndex = Math.max(this.selectedRange.start, this.selectedRange.end);
-            
-            // Show user feedback about selected context
+        } else if (this.contextMarkers.in !== null || this.contextMarkers.out !== null) {
+            // Priority 2: IN/OUT markers
+            if (this.contextMarkers.in !== null && this.contextMarkers.out !== null) {
+                // Both markers set - use the range between them
+                startWordIndex = Math.min(this.contextMarkers.in, this.contextMarkers.out);
+                endWordIndex = Math.max(this.contextMarkers.in, this.contextMarkers.out);
+            } else if (this.contextMarkers.in !== null) {
+                // Only IN marker set - from IN to end of transcript
+                startWordIndex = this.contextMarkers.in;
+                endWordIndex = this.wordCount - 1;
+            } else if (this.contextMarkers.out !== null) {
+                // Only OUT marker set - from start to OUT
+                startWordIndex = 0;
+                endWordIndex = this.contextMarkers.out;
+            }
+        } else if (this.settings.wordLimit > 0 && this.wordCount > this.settings.wordLimit) {
+            // Priority 3: Word limit (last N words)
+            startWordIndex = this.wordCount - this.settings.wordLimit;
+            endWordIndex = this.wordCount - 1;
+        }
+        
+        // Show user feedback about selected context
+        if (startWordIndex !== null && endWordIndex !== null) {
             const wordCount = endWordIndex - startWordIndex + 1;
         }
 
@@ -2986,6 +3072,164 @@ class RendererApp {
             e.preventDefault();
             this.clearSelection();
         }
+        
+        // IN/OUT marker shortcuts (only when not in notes editor)
+        if (e.target !== this.notesEditor && e.target !== this.noteHeaderInput && e.target !== this.sessionTopicInput) {
+            if (e.key === 'i' || e.key === 'I') {
+                e.preventDefault();
+                this.toggleInMarker();
+            }
+            if (e.key === 'o' || e.key === 'O') {
+                e.preventDefault();
+                this.toggleOutMarker();
+            }
+        }
+    }
+
+    toggleInMarker() {
+        if (this.lastClickedWord === null) {
+            console.log('No word selected. Click on a word first.');
+            return;
+        }
+        
+        // If clicking on the same word that already has IN marker, remove it
+        if (this.contextMarkers.in === this.lastClickedWord) {
+            this.contextMarkers.in = null;
+        } else {
+            this.contextMarkers.in = this.lastClickedWord;
+        }
+        
+        this.updateContextMarkersDisplay();
+        this.updateContextHighlighting();
+        this.updateContextPreview();
+    }
+
+    toggleOutMarker() {
+        if (this.lastClickedWord === null) {
+            console.log('No word selected. Click on a word first.');
+            return;
+        }
+        
+        // If clicking on the same word that already has OUT marker, remove it
+        if (this.contextMarkers.out === this.lastClickedWord) {
+            this.contextMarkers.out = null;
+        } else {
+            this.contextMarkers.out = this.lastClickedWord;
+        }
+        
+        this.updateContextMarkersDisplay();
+        this.updateContextHighlighting();
+        this.updateContextPreview();
+    }
+
+    updateContextMarkersDisplay() {
+        // Hide all markers first
+        this.inMarker.style.display = 'none';
+        this.outMarker.style.display = 'none';
+        this.inOutRangeArea.style.display = 'none';
+        
+        if (this.wordCount === 0) return;
+        
+        // Show IN marker if set
+        if (this.contextMarkers.in !== null) {
+            const inPercent = (this.contextMarkers.in / this.wordCount) * 100;
+            this.inMarker.style.left = `${inPercent}%`;
+            this.inMarker.style.display = 'block';
+        }
+        
+        // Show OUT marker if set
+        if (this.contextMarkers.out !== null) {
+            const outPercent = (this.contextMarkers.out / this.wordCount) * 100;
+            this.outMarker.style.left = `${outPercent}%`;
+            this.outMarker.style.display = 'block';
+        }
+        
+        // Show range area if we have markers
+        if (this.contextMarkers.in !== null || this.contextMarkers.out !== null) {
+            let startWord, endWord;
+            
+            if (this.contextMarkers.in !== null && this.contextMarkers.out !== null) {
+                // Both markers set - use the range between them
+                startWord = Math.min(this.contextMarkers.in, this.contextMarkers.out);
+                endWord = Math.max(this.contextMarkers.in, this.contextMarkers.out);
+            } else if (this.contextMarkers.in !== null) {
+                // Only IN marker set - from IN to end of transcript
+                startWord = this.contextMarkers.in;
+                endWord = this.wordCount - 1;
+            } else if (this.contextMarkers.out !== null) {
+                // Only OUT marker set - from start to OUT
+                startWord = 0;
+                endWord = this.contextMarkers.out;
+            }
+            
+            const startPercent = (startWord / this.wordCount) * 100;
+            const endPercent = (endWord / this.wordCount) * 100;
+            const widthPercent = endPercent - startPercent;
+            
+            this.inOutRangeArea.style.left = `${startPercent}%`;
+            this.inOutRangeArea.style.width = `${widthPercent}%`;
+            this.inOutRangeArea.style.display = 'block';
+            
+            // Hide yellow context limit area when green IN/OUT range is active
+            this.contextLimitArea.style.display = 'none';
+        } else {
+            // No markers set, allow context limit area to show if applicable
+            this.updateTimelineContextLimit();
+        }
+    }
+
+    updateContextHighlighting() {
+        // Clear existing IN/OUT range highlighting
+        document.querySelectorAll('.word').forEach(el => {
+            el.classList.remove('in-out-range', 'in-out-range-end');
+        });
+        
+        // Apply IN/OUT range highlighting if markers are set and no selection is active
+        const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
+        if ((this.contextMarkers.in !== null || this.contextMarkers.out !== null) && !hasSelection) {
+            let startWord, endWord;
+            
+            if (this.contextMarkers.in !== null && this.contextMarkers.out !== null) {
+                // Both markers set - use the range between them
+                startWord = Math.min(this.contextMarkers.in, this.contextMarkers.out);
+                endWord = Math.max(this.contextMarkers.in, this.contextMarkers.out);
+            } else if (this.contextMarkers.in !== null) {
+                // Only IN marker set - from IN to end of transcript
+                startWord = this.contextMarkers.in;
+                endWord = this.wordCount - 1;
+            } else if (this.contextMarkers.out !== null) {
+                // Only OUT marker set - from start to OUT
+                startWord = 0;
+                endWord = this.contextMarkers.out;
+            }
+            
+            // Apply highlighting to words in this range
+            document.querySelectorAll('.word').forEach(wordEl => {
+                const wordIndex = parseInt(wordEl.dataset.wordIndex);
+                if (wordIndex >= startWord && wordIndex <= endWord) {
+                    wordEl.classList.add('in-out-range');
+                    // Mark the last word in the range to prevent gap-fill after it
+                    if (wordIndex === endWord) {
+                        wordEl.classList.add('in-out-range-end');
+                    }
+                }
+            });
+            
+            // Hide yellow context limit highlighting when green IN/OUT range is active
+            document.querySelectorAll('.word').forEach(el => {
+                el.classList.remove('context-limit', 'context-limit-end');
+            });
+            this.contextLimitArea.style.display = 'none';
+        } else {
+            // No IN/OUT range active, allow context limit highlighting to show
+            this.updateContextLimitHighlighting();
+        }
+    }
+
+    updateContextPreview() {
+        // This function should trigger an update of the context preview
+        // The actual context selection logic will be updated separately
+        this.updateSelectionStatus();
     }
 
     formatText(command, value = null) {

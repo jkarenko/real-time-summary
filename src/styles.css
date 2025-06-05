@@ -262,6 +262,35 @@ body {
     background-color: rgba(0, 102, 204, 0.3); /* Selection takes priority */
 }
 
+/* IN/OUT context range highlighting */
+.word.in-out-range {
+    background-color: rgba(40, 167, 69, 0.15); /* Pale green background */
+    position: relative;
+    z-index: 1;
+}
+
+/* Fill gaps between IN/OUT range words using pseudo-elements */
+.word.in-out-range:not(.in-out-range-end)::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 100%;
+    width: 1ch; /* One character width to cover typical space */
+    background: rgba(40, 167, 69, 0.15); /* Same pale green as the words */
+    z-index: 0; /* Behind the word content */
+    pointer-events: none;
+}
+
+/* Priority hierarchy: Selection > IN/OUT range > Context limit */
+.word.in-out-range.selected {
+    background-color: rgba(0, 102, 204, 0.3); /* Selection takes priority */
+}
+
+.word.in-out-range.context-limit {
+    background-color: rgba(40, 167, 69, 0.15); /* IN/OUT range takes priority over context limit */
+}
+
 @keyframes cursor-pulse {
     0% { transform: scale(1); }
     50% { transform: scale(1.1); }
@@ -613,6 +642,48 @@ body {
     border-radius: 20px;
     display: none;
     z-index: 1; /* Behind selection area */
+}
+
+/* IN/OUT Context Markers */
+.context-marker {
+    position: absolute;
+    top: -6px;
+    width: 0;
+    height: 0;
+    z-index: 15;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.in-marker {
+    /* Green triangle pointing right */
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+    border-left: 12px solid #28a745;
+    transform: translateX(-50%);
+}
+
+.out-marker {
+    /* Red triangle pointing left */
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+    border-right: 12px solid #dc3545;
+    transform: translateX(-50%);
+}
+
+.context-marker:hover {
+    transform: translateX(-50%) scale(1.2);
+}
+
+.in-out-range-area {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: rgba(40, 167, 69, 0.15); /* Pale green */
+    border: 1px solid rgba(40, 167, 69, 0.4);
+    border-radius: 20px;
+    display: none;
+    z-index: 2; /* Above context-limit-area, below selection area */
 }
 
 /* Row 3: Notes */

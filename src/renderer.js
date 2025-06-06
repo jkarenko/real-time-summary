@@ -3093,7 +3093,52 @@ class RendererApp {
             console.log(`Segment assigned to sub-header: "${topicData.subHeader.title}"`);
             
             // No visual update needed for assignment
+        } else if (topicData.type === 'retrospective-reorganization') {
+            // Retrospective reorganization - completely reconstruct the transcript
+            console.log(`Retrospective reorganization triggered for header: "${topicData.header.title}"`);
+            
+            // Update our metadata with the new organization
+            this.transcriptMetadata = topicData.metadata;
+            
+            // Trigger a full reconstruction of the transcript with the new hierarchy
+            this.reconstructTranscriptFromCurrentMetadata();
         }
+    }
+
+    reconstructTranscriptFromCurrentMetadata() {
+        if (!this.transcriptMetadata || !this.transcriptLines.length) {
+            console.log('No metadata or transcript lines available for reconstruction');
+            return;
+        }
+        
+        console.log('Reconstructing transcript from current metadata...');
+        
+        // Create a mock data object similar to what handleTranscriptUpdate expects
+        const reconstructionData = {
+            lines: this.transcriptLines,
+            wordCount: this.wordCount,
+            currentPosition: this.currentPosition,
+            metadata: this.transcriptMetadata
+        };
+        
+        // Clear current transcript content
+        this.transcriptContent.innerHTML = '';
+        const originalLines = [...this.transcriptLines]; // Save original lines
+        this.transcriptLines = []; // Clear for reconstruction
+        
+        // Use the existing reconstruction logic
+        this.reconstructTranscriptFromSegments(originalLines, this.transcriptMetadata);
+        
+        // Update UI elements
+        this.updateTimeline();
+        this.updateWordCountDisplay();
+        this.updateContextLimitHighlighting();
+        this.updateTimelineContextLimit();
+        this.updateContextMarkersDisplay();
+        this.updateContextHighlighting();
+        this.renderSegmentMarkers();
+        
+        console.log('✅ Transcript reconstruction completed');
     }
 
     updateHeaderElementTitle(headerId, newTitle) {

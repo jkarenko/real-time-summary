@@ -840,7 +840,7 @@ CRITICAL: Respond with ONLY the header title. Do NOT include explanations, reaso
                 if ((result + ' ' + word).length > 60) break;
                 result += (result ? ' ' : '') + word;
             }
-            cleaned = result || cleaned.substring(0, 60);
+            cleaned = result || cleaned.slice(0, 60);
         }
         
         return cleaned.trim();
@@ -913,7 +913,7 @@ Provide ONLY the compressed summary, no explanations.`;
             console.error('Error compressing summary:', error.message);
             // Fallback: truncate to reasonable length
             const combined = currentSummary + ' ' + newContent;
-            return combined.length > 500 ? combined.substring(0, 500) + '...' : combined;
+            return combined.length > 500 ? combined.slice(0, 500) + '...' : combined;
         }
     }
 
@@ -1176,6 +1176,12 @@ Provide ONLY the compressed summary, no explanations.`;
         try {
             console.log('Creating new header for split segment:', segment.id);
             
+            // Trigger retrospective sub-header analysis for the previous header before creating new one
+            if (this.metadata.headers.length > 0) {
+                const previousHeader = this.metadata.headers[this.metadata.headers.length - 1];
+                await this.performRetrospectiveSubHeaderAnalysis(previousHeader);
+            }
+            
             // Create expanded context with overlap from previous content
             const expandedContext = this.createExpandedContextForNewTopic(segment);
             
@@ -1374,6 +1380,12 @@ Respond with only "EVOLVE" or "SUBHEADER" - no explanations.`;
         try {
             console.log('Creating new header for segment:', segment.id);
             
+            // Trigger retrospective sub-header analysis for the previous header before creating new one
+            if (this.metadata.headers.length > 0) {
+                const previousHeader = this.metadata.headers[this.metadata.headers.length - 1];
+                await this.performRetrospectiveSubHeaderAnalysis(previousHeader);
+            }
+            
             // Create expanded context with overlap from previous content
             const expandedContext = this.createExpandedContextForNewTopic(segment);
             
@@ -1559,7 +1571,7 @@ CRITICAL: Respond with ONLY the sub-header title, no explanations.`;
     async updateSubHeaderSummary(subHeader, newSegmentContent) {
         try {
             const currentSummary = subHeader.summary || '';
-            const maxSummaryLength = 300; // Shorter for sub-headers
+            const maxSummaryLength = 100; // Shorter for sub-headers
             
             if (currentSummary.length > maxSummaryLength) {
                 subHeader.summary = await this.compressSummary(currentSummary, newSegmentContent);
@@ -1578,6 +1590,259 @@ CRITICAL: Respond with ONLY the sub-header title, no explanations.`;
         } catch (error) {
             console.error('Error updating sub-header summary:', error.message);
             subHeader.summary = (subHeader.summary || '') + ' ' + newSegmentContent;
+        }
+    }
+
+    async performRetrospectiveSubHeaderAnalysis(header) {
+        try {
+            // Only analyze headers that have multiple segments and no existing sub-headers
+            if (!header.segments || header.segments.length < 2 || (header.subHeaders && header.subHeaders.length > 0)) {
+                console.log(`Skipping retrospective analysis for header "${header.title}" - insufficient segments or already has sub-headers`);
+                return;
+            }
+            
+            console.log(`🔍 Performing retrospective sub-header analysis for "${header.title}" with ${header.segments.length} segments`);
+            
+            // Get all content from this header's segments
+            const headerContent = this.getHeaderSegmentsContent(header);
+            
+            if (!headerContent.trim()) {
+                console.log('No content found for retrospective analysis');
+                return;
+            }
+            
+            // Analyze if the content should be broken down into sub-headers
+            const analysis = await this.analyzeContentForSubHeaders(headerContent, header.title);
+            
+            if (analysis.shouldCreateSubHeaders && analysis.subHeaders && analysis.subHeaders.length > 1) {
+                console.log(`📋 Analysis suggests creating ${analysis.subHeaders.length} sub-headers for "${header.title}"`);
+                
+                // Create sub-headers and reassign segments
+                await this.createRetrospectiveSubHeaders(header, analysis.subHeaders);
+            } else {
+                console.log(`📋 Analysis suggests keeping "${header.title}" as a single topic`);
+            }
+            
+        } catch (error) {
+            console.error('Error in retrospective sub-header analysis:', error.message);
+        }
+    }
+
+    async analyzeContentForSubHeaders(content, mainHeaderTitle) {
+        try {
+            const prompt = `You are analyzing meeting content to determine if it should be broken down into sub-headers for a SOFTWARE SOLUTION ARCHITECT.
+
+MAIN HEADER: "${mainHeaderTitle}"
+
+CONTENT TO ANALYZE:
+${content}
+
+Analyze this content and determine:
+1. Should this content be broken down into distinct sub-topics?
+2. If yes, what would be the sub-header titles?
+
+Guidelines:
+- Only suggest sub-headers if there are clearly distinct sub-topics or phases
+- Each sub-header should represent a meaningful portion of content (not tiny fragments)
+- Sub-headers should be specific and descriptive (3-6 words)
+- Minimum 2 sub-headers required if creating any
+- Maximum 4 sub-headers to avoid over-fragmentation
+
+Response format (IMPORTANT - follow exactly):
+- If content should remain as single topic: "NO_SUBHEADERS"
+- If content should be broken down: "SUBHEADERS: [title1] | [title2] | [title3]"
+
+Examples:
+- "SUBHEADERS: Database Schema Design | Performance Optimization | Migration Strategy"
+- "SUBHEADERS: Authentication Setup | API Rate Limiting"
+- "NO_SUBHEADERS"
+
+Respond with ONLY the format above - no explanations.`;
+
+            const message = await this.anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 150,
+                messages: [{
+                    role: 'user',
+                    content: prompt
+                }]
+            });
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+            const response = message.content[0].text.trim();
+            console.log(`Sub-header analysis response: ${response}`);
+
+            if (response === 'NO_SUBHEADERS') {
+                return { shouldCreateSubHeaders: false };
+            } else if (response.startsWith('SUBHEADERS:')) {
+                const subHeaderTitles = response.slice(11).split('|').map(title => title.trim()).filter(title => title.length > 0);
+                
+                if (subHeaderTitles.length >= 2) {
+                    return {
+                        shouldCreateSubHeaders: true,
+                        subHeaders: subHeaderTitles
+                    };
+                }
+            }
+            
+            // Fallback if response format is unexpected
+            return { shouldCreateSubHeaders: false };
+
+        } catch (error) {
+            console.error('Error analyzing content for sub-headers:', error.message);
+            return { shouldCreateSubHeaders: false };
+        }
+    }
+
+    async createRetrospectiveSubHeaders(header, subHeaderTitles) {
+        try {
+            console.log(`Creating ${subHeaderTitles.length} retrospective sub-headers for "${header.title}"`);
+            
+            // Get all segments for this header
+            const headerSegments = header.segments.map(segmentId => 
+                this.metadata.segments.find(s => s.id === segmentId)
+            ).filter(Boolean);
+            
+            if (headerSegments.length === 0) {
+                console.log('No segments found for retrospective sub-header creation');
+                return;
+            }
+            
+            // Ask AI to assign each segment to the appropriate sub-header
+            const segmentAssignments = await this.assignSegmentsToSubHeaders(headerSegments, subHeaderTitles);
+            
+            if (!segmentAssignments || segmentAssignments.length === 0) {
+                console.log('No valid segment assignments received');
+                return;
+            }
+            
+            // Create sub-headers and assign segments
+            for (let i = 0; i < subHeaderTitles.length; i++) {
+                const subHeaderTitle = subHeaderTitles[i];
+                const assignedSegments = segmentAssignments.filter(assignment => assignment.subHeaderIndex === i);
+                
+                if (assignedSegments.length > 0) {
+                    const subHeaderId = `subheader-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    const segmentIds = assignedSegments.map(assignment => assignment.segmentId);
+                    
+                    // Create summary from assigned segments
+                    const subHeaderContent = segmentIds.map(segmentId => {
+                        const segment = this.metadata.segments.find(s => s.id === segmentId);
+                        return segment ? this.getSegmentContent(segment) : '';
+                    }).join(' ');
+                    
+                    const subHeader = {
+                        id: subHeaderId,
+                        title: subHeaderTitle,
+                        segments: segmentIds,
+                        summary: subHeaderContent.slice(0, 200), // Keep summary concise
+                        parentId: header.id,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    header.subHeaders.push(subHeader);
+                    console.log(`📋 Created retrospective sub-header: "${subHeaderTitle}" with ${segmentIds.length} segments`);
+                }
+            }
+            
+            // Update metadata
+            this.saveMetadata();
+            console.log(`✅ Completed retrospective sub-header creation for "${header.title}"`);
+            
+            // Notify UI to reconstruct the entire transcript with the new hierarchical organization
+            if (this.electronApp) {
+                this.electronApp.sendTopicUpdate({
+                    type: 'retrospective-reorganization',
+                    header: header,
+                    metadata: this.metadata
+                });
+            }
+            
+        } catch (error) {
+            console.error('Error creating retrospective sub-headers:', error.message);
+        }
+    }
+
+    async assignSegmentsToSubHeaders(segments, subHeaderTitles) {
+        try {
+            // Create a mapping of segment content with indices
+            const segmentMap = segments.map((segment, index) => ({
+                index: index,
+                segmentId: segment.id,
+                content: this.getSegmentContent(segment),
+                startWordIndex: segment.startWordIndex,
+                endWordIndex: segment.endWordIndex
+            }));
+            
+            const prompt = `You are assigning transcript segments to sub-headers for a SOFTWARE SOLUTION ARCHITECT meeting.
+
+SUB-HEADERS:
+${subHeaderTitles.map((title, index) => `${index}: ${title}`).join('\n')}
+
+SEGMENTS TO ASSIGN:
+${segmentMap.map(s => `Segment ${s.index}: ${s.content}`).join('\n\n')}
+
+Assign each segment to the most appropriate sub-header by responding with the segment number followed by the sub-header index.
+
+Response format (IMPORTANT - follow exactly):
+Format: "SEGMENT_INDEX:SUBHEADER_INDEX"
+One assignment per line.
+
+Example:
+0:0
+1:0
+2:1
+3:2
+4:2
+
+Assign ALL segments to sub-headers. Each segment should be assigned to exactly one sub-header.`;
+
+            const message = await this.anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 200,
+                messages: [{
+                    role: 'user',
+                    content: prompt
+                }]
+            });
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+            const response = message.content[0].text.trim();
+            console.log(`Segment assignment response: ${response}`);
+            
+            // Parse the response
+            const assignments = [];
+            const lines = response.split('\n').filter(line => line.trim());
+            
+            for (const line of lines) {
+                const match = line.match(/^(\d+):(\d+)$/);
+                if (match) {
+                    const segmentIndex = parseInt(match[1]);
+                    const subHeaderIndex = parseInt(match[2]);
+                    
+                    if (segmentIndex < segments.length && subHeaderIndex < subHeaderTitles.length) {
+                        assignments.push({
+                            segmentId: segments[segmentIndex].id,
+                            subHeaderIndex: subHeaderIndex
+                        });
+                    }
+                }
+            }
+            
+            console.log(`Parsed ${assignments.length} segment assignments`);
+            return assignments;
+            
+        } catch (error) {
+            console.error('Error assigning segments to sub-headers:', error.message);
+            return [];
         }
     }
 

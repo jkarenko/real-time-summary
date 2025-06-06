@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     
     // Session operations
     updateSessionContext: (context) => ipcRenderer.invoke('update-session-context', context),
+    setSessionStartTime: (sessionStartTime) => ipcRenderer.invoke('set-session-start-time', sessionStartTime),
     
     // External operations
     openExternal: (url) => ipcRenderer.invoke('open-external', url),

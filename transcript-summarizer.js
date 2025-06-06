@@ -50,6 +50,13 @@ class TranscriptSummarizer {
             version: "1.0"
         };
         this.lastKnownWordCount = 0; // Track word count for delta detection
+        this.sessionStartTime = null; // Will be set by renderer for consistent timing
+    }
+
+    // Set session start time for consistent timing across app restarts
+    setSessionStartTime(sessionStartTime) {
+        this.sessionStartTime = sessionStartTime;
+        console.log(`TranscriptSummarizer: Session start time set to ${new Date(sessionStartTime).toISOString()}`);
     }
 
     getSummaryFilePath(transcriptPath) {
@@ -139,13 +146,22 @@ class TranscriptSummarizer {
         }
     }
 
-    addSegment(startWordIndex, endWordIndex, source = 'unknown') {
+    addSegment(startWordIndex, endWordIndex, source = 'unknown', sessionStartTime = null) {
         const segmentId = `segment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Calculate session time in milliseconds since session start
+        let sessionTime;
+        if (sessionStartTime) {
+            sessionTime = Date.now() - sessionStartTime;
+        } else {
+            sessionTime = Date.now() - this.startTime; // fallback to summarizer start time
+        }
+        
         const segment = {
             id: segmentId,
             startWordIndex,
             endWordIndex,
-            timestamp: new Date().toISOString(),
+            sessionTime: sessionTime, // Store relative session time instead of absolute timestamp
             source
         };
         
@@ -2310,7 +2326,7 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
                         
                         // Add segment for the new content
                         if (newWords.length > 0) {
-                            this.addSegment(startWordIndex, endWordIndex, 'live-transcription');
+                            this.addSegment(startWordIndex, endWordIndex, 'live-transcription', this.sessionStartTime);
                             this.lastKnownWordCount = endWordIndex + 1;
                         }
                         

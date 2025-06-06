@@ -936,6 +936,14 @@ class ElectronTranscriptApp {
             await this.handleOpenFile();
         });
 
+        // Set session start time for consistent timeline
+        ipcMain.handle('set-session-start-time', (_, sessionStartTime) => {
+            if (this.summarizer) {
+                this.summarizer.setSessionStartTime(sessionStartTime);
+                console.log('Main: Session start time updated');
+            }
+        });
+
         // Renderer ready signal
         ipcMain.handle('renderer-ready', () => {
             console.log('Renderer process ready');

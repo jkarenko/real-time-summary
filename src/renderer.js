@@ -1710,6 +1710,55 @@ class RendererApp {
         }
     }
 
+    // Initialize session start time based on existing segments
+    initializeSessionTime(metadata) {
+        if (metadata && metadata.segments && metadata.segments.length > 0) {
+            // Check if segments have the new sessionTime format or old timestamp format
+            const hasSessionTime = metadata.segments.some(segment => segment.sessionTime !== undefined);
+            
+            if (hasSessionTime) {
+                // Find the latest sessionTime to determine current session position
+                const latestSessionTime = Math.max(...metadata.segments.map(s => s.sessionTime || 0));
+                // Set sessionStartTime so that current time minus sessionStartTime equals latestSessionTime
+                this.sessionStartTime = Date.now() - latestSessionTime;
+                console.log(`Resuming session from ${latestSessionTime}ms (${Math.floor(latestSessionTime/1000)}s)`);
+            } else {
+                // Legacy segments with absolute timestamps - convert them to session time
+                this.convertLegacyTimestamps(metadata);
+            }
+        }
+        // If no segments exist, sessionStartTime remains as initialized in constructor (Date.now())
+        
+        // Send the session start time to the main process
+        if (window.electronAPI) {
+            window.electronAPI.setSessionStartTime(this.sessionStartTime);
+        }
+    }
+
+    // Convert legacy absolute timestamps to session time format
+    convertLegacyTimestamps(metadata) {
+        if (!metadata.segments || metadata.segments.length === 0) return;
+        
+        // Find the earliest absolute timestamp to use as session start reference
+        const earliestTimestamp = Math.min(...metadata.segments.map(s => {
+            return s.timestamp ? new Date(s.timestamp).getTime() : Date.now();
+        }));
+        
+        // Convert all segments to use sessionTime relative to earliest timestamp
+        metadata.segments.forEach(segment => {
+            if (segment.timestamp && !segment.sessionTime) {
+                const absoluteTime = new Date(segment.timestamp).getTime();
+                segment.sessionTime = absoluteTime - earliestTimestamp;
+                // Keep the original timestamp for compatibility if needed
+                // delete segment.timestamp; // Uncomment if you want to remove legacy format
+            }
+        });
+        
+        // Set session start time based on the earliest timestamp
+        this.sessionStartTime = earliestTimestamp;
+        console.log(`Converted ${metadata.segments.length} legacy segments to session time format`);
+    }
+
     // Transcript handling
     handleTranscriptUpdate(data) {
         const { lines, wordCount, currentPosition, metadata } = data;
@@ -1718,6 +1767,9 @@ class RendererApp {
         if (metadata) {
             this.transcriptMetadata = metadata;
             console.log(`Received metadata with ${metadata.segments.length} segments`);
+            
+            // Initialize session start time based on existing segments
+            this.initializeSessionTime(metadata);
             
             // If this is the initial load with metadata, reconstruct segments
             if (this.transcriptLines.length === 0 && metadata.segments.length > 0) {
@@ -3862,10 +3914,28 @@ class RendererApp {
             const originalLine = firstWordInfo.originalLine;
             
             // Create a segment line with the segment's words
-            const metadataTimestamp = new Date(segment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+            // Handle both new sessionTime format and legacy timestamp format
+            let displayTimestamp;
+            if (segment.sessionTime !== undefined) {
+                // Convert session time to display format (hours:minutes:seconds)
+                const totalSeconds = Math.floor(segment.sessionTime / 1000);
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds % 3600) / 60);
+                const seconds = totalSeconds % 60;
+                if (hours > 0) {
+                    displayTimestamp = `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                } else {
+                    displayTimestamp = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                }
+            } else if (segment.timestamp) {
+                // Legacy format - use absolute timestamp
+                displayTimestamp = new Date(segment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+            } else {
+                displayTimestamp = '0:00';
+            }
             
             const segmentLine = {
-                timestamp: metadataTimestamp,
+                timestamp: displayTimestamp,
                 speaker: originalLine.speaker || (segment.source === 'live-transcription' ? 'Live Audio' : 'Speaker'),
                 content: segmentWords.join(' '),
                 wordIndex: segment.startWordIndex,

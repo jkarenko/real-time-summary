@@ -240,6 +240,7 @@ class RendererApp {
             window.electronAPI.onScreenshotsUpdate((screenshots) => this.updateScreenshots(screenshots));
             window.electronAPI.onNoteCreated((note) => this.handleNoteCreated(note));
             window.electronAPI.onSummaryUpdate((summary) => this.handleSummaryUpdate(summary));
+            window.electronAPI.onTopicUpdate((topicData) => this.handleTopicUpdate(topicData));
             window.electronAPI.onCostUpdate((cost) => this.updateCost(cost));
             window.electronAPI.onStatusUpdate((status) => this.updateStatus(status));
             window.electronAPI.onSettingsUpdate((settings) => this.updateSettings(settings));
@@ -3033,6 +3034,280 @@ class RendererApp {
         console.log('Summary updated:', summary);
     }
 
+    handleTopicUpdate(topicData) {
+        console.log('Topic update received:', topicData);
+        
+        // Update local metadata with the new topic information
+        if (!this.transcriptMetadata) {
+            this.transcriptMetadata = { segments: [], headers: [] };
+        }
+        if (!this.transcriptMetadata.headers) {
+            this.transcriptMetadata.headers = [];
+        }
+        
+        if (topicData.type === 'header-created') {
+            // Add new header to local metadata
+            this.transcriptMetadata.headers.push(topicData.header);
+            console.log(`New topic created: "${topicData.header.title}"`);
+            
+            // Add header at the correct position above its segments
+            this.insertHeaderAtPosition(topicData.header, topicData.segment);
+            
+        } else if (topicData.type === 'segment-assigned') {
+            // Update existing header in local metadata
+            const headerIndex = this.transcriptMetadata.headers.findIndex(h => h.id === topicData.header.id);
+            if (headerIndex >= 0) {
+                this.transcriptMetadata.headers[headerIndex] = topicData.header;
+            }
+            console.log(`Segment assigned to topic: "${topicData.header.title}"`);
+            
+            // No visual update needed for assignment
+        } else if (topicData.type === 'header-evolved') {
+            // Update existing header in local metadata and visually update the header
+            const headerIndex = this.transcriptMetadata.headers.findIndex(h => h.id === topicData.header.id);
+            if (headerIndex >= 0) {
+                this.transcriptMetadata.headers[headerIndex] = topicData.header;
+            }
+            console.log(`Header evolved from "${topicData.oldTitle}" to "${topicData.header.title}"`);
+            
+            // Update the visual header element
+            this.updateHeaderElementTitle(topicData.header.id, topicData.header.title);
+            
+        } else if (topicData.type === 'subheader-created') {
+            // Update main header in local metadata to include the new sub-header
+            const headerIndex = this.transcriptMetadata.headers.findIndex(h => h.id === topicData.header.id);
+            if (headerIndex >= 0) {
+                this.transcriptMetadata.headers[headerIndex] = topicData.header;
+            }
+            console.log(`Sub-header created: "${topicData.subHeader.title}" under "${topicData.header.title}"`);
+            
+            // Add sub-header at the correct position
+            this.insertSubHeaderAtPosition(topicData.subHeader, topicData.segment, topicData.header);
+            
+        } else if (topicData.type === 'subheader-assigned') {
+            // Update main header in local metadata with the updated sub-header
+            const headerIndex = this.transcriptMetadata.headers.findIndex(h => h.id === topicData.header.id);
+            if (headerIndex >= 0) {
+                this.transcriptMetadata.headers[headerIndex] = topicData.header;
+            }
+            console.log(`Segment assigned to sub-header: "${topicData.subHeader.title}"`);
+            
+            // No visual update needed for assignment
+        }
+    }
+
+    updateHeaderElementTitle(headerId, newTitle) {
+        // Find all topic header elements and update the one with matching data
+        const headerElements = this.transcriptContent.querySelectorAll('.topic-header');
+        
+        for (const headerElement of headerElements) {
+            // We need to identify which header this is - we can do this by looking at the title
+            // Since we don't store the header ID in the DOM, we'll need to find it by process of elimination
+            // For now, let's update all headers with the old title to the new title
+            const titleElement = headerElement.querySelector('.topic-title');
+            if (titleElement) {
+                // Store the header ID as a data attribute for future reference
+                if (!headerElement.dataset.headerId) {
+                    headerElement.dataset.headerId = headerId;
+                }
+                
+                // Update if this is the right header
+                if (headerElement.dataset.headerId === headerId) {
+                    titleElement.textContent = newTitle;
+                    console.log(`Updated header element title to: "${newTitle}"`);
+                    
+                    // Add a brief visual indication that the header was updated
+                    headerElement.style.transition = 'all 0.3s ease';
+                    headerElement.style.backgroundColor = '#4c63d2';
+                    setTimeout(() => {
+                        headerElement.style.backgroundColor = '';
+                    }, 1000);
+                    
+                    break;
+                }
+            }
+        }
+    }
+
+    addHeaderAtEnd(header) {
+        // Simple approach: add header at the end of transcript
+        // This ensures it's visible immediately
+        const headerElement = document.createElement('div');
+        headerElement.className = 'topic-header';
+        headerElement.dataset.headerId = header.id;
+        headerElement.innerHTML = `
+            <div class="topic-header-content">
+                <div class="topic-title">${header.title}</div>
+                <div class="topic-timestamp">${new Date(header.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        this.transcriptContent.appendChild(headerElement);
+        this.addHeaderStyles();
+        
+        console.log(`✅ Added header "${header.title}" at end of transcript`);
+    }
+
+    insertHeaderAtPosition(header, segment) {
+        console.log('insertHeaderAtPosition called with:', { header: header.title, segment: segment.id, startWordIndex: segment.startWordIndex });
+        
+        const segmentStartWordIndex = segment.startWordIndex;
+        const transcriptLines = this.transcriptContent.querySelectorAll('.transcript-line');
+        console.log(`Found ${transcriptLines.length} transcript lines`);
+        
+        let targetLineElement = null;
+        let bestMatch = null;
+        let bestMatchDistance = Infinity;
+        
+        // Try to find the best matching line
+        for (const lineElement of transcriptLines) {
+            const wordIndex = parseInt(lineElement.dataset.wordIndex || '0');
+            const wordCount = parseInt(lineElement.dataset.wordCount || '0');
+            const lineEndIndex = wordIndex + wordCount - 1;
+            
+            // Check if this line contains the segment start (exact match)
+            if (wordIndex <= segmentStartWordIndex && segmentStartWordIndex <= lineEndIndex) {
+                targetLineElement = lineElement;
+                console.log(`Found exact match: line starts at ${wordIndex}, segment at ${segmentStartWordIndex}`);
+                break;
+            }
+            
+            // Track the closest line as a fallback
+            const distance = Math.abs(wordIndex - segmentStartWordIndex);
+            if (distance < bestMatchDistance) {
+                bestMatchDistance = distance;
+                bestMatch = lineElement;
+            }
+        }
+        
+        // If no exact match, use the closest line
+        if (!targetLineElement && bestMatch) {
+            targetLineElement = bestMatch;
+            console.log(`Using closest match with distance ${bestMatchDistance}`);
+        }
+        
+        // If we still don't have a target, add at the end as fallback
+        if (!targetLineElement) {
+            console.log('No suitable line found, adding header at end');
+            this.addHeaderAtEnd(header);
+            return;
+        }
+        
+        // Check if there's already a header before this line
+        const previousElement = targetLineElement.previousElementSibling;
+        if (previousElement && previousElement.classList.contains('topic-header')) {
+            console.log('Header already exists before this line, skipping');
+            return;
+        }
+        
+        // Create and insert the header element
+        const headerElement = document.createElement('div');
+        headerElement.className = 'topic-header';
+        headerElement.dataset.headerId = header.id;
+        headerElement.innerHTML = `
+            <div class="topic-header-content">
+                <div class="topic-title">${header.title}</div>
+                <div class="topic-timestamp">${new Date(header.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        // Insert the header before the target line
+        this.transcriptContent.insertBefore(headerElement, targetLineElement);
+        this.addHeaderStyles();
+        
+        console.log(`✅ Inserted header "${header.title}" before line at word index ${segmentStartWordIndex}`);
+    }
+
+    insertSubHeaderAtPosition(subHeader, segment, mainHeader) {
+        console.log('insertSubHeaderAtPosition called with:', { subHeader: subHeader.title, segment: segment.id, startWordIndex: segment.startWordIndex, mainHeader: mainHeader.title });
+        
+        const segmentStartWordIndex = segment.startWordIndex;
+        const transcriptLines = this.transcriptContent.querySelectorAll('.transcript-line');
+        console.log(`Found ${transcriptLines.length} transcript lines`);
+        
+        let targetLineElement = null;
+        let bestMatch = null;
+        let bestMatchDistance = Infinity;
+        
+        // Try to find the best matching line
+        for (const lineElement of transcriptLines) {
+            const wordIndex = parseInt(lineElement.dataset.wordIndex || '0');
+            const wordCount = parseInt(lineElement.dataset.wordCount || '0');
+            const lineEndIndex = wordIndex + wordCount - 1;
+            
+            // Check if this line contains the segment start (exact match)
+            if (wordIndex <= segmentStartWordIndex && segmentStartWordIndex <= lineEndIndex) {
+                targetLineElement = lineElement;
+                console.log(`Found exact match: line starts at ${wordIndex}, segment at ${segmentStartWordIndex}`);
+                break;
+            }
+            
+            // Track the closest line as a fallback
+            const distance = Math.abs(wordIndex - segmentStartWordIndex);
+            if (distance < bestMatchDistance) {
+                bestMatchDistance = distance;
+                bestMatch = lineElement;
+            }
+        }
+        
+        // If no exact match, use the closest line
+        if (!targetLineElement && bestMatch) {
+            targetLineElement = bestMatch;
+            console.log(`Using closest match with distance ${bestMatchDistance}`);
+        }
+        
+        // If we still don't have a target, add at the end as fallback
+        if (!targetLineElement) {
+            console.log('No suitable line found, adding sub-header at end');
+            this.addSubHeaderAtEnd(subHeader, mainHeader);
+            return;
+        }
+        
+        // Check if there's already a sub-header before this line
+        const previousElement = targetLineElement.previousElementSibling;
+        if (previousElement && (previousElement.classList.contains('topic-header') || previousElement.classList.contains('topic-subheader'))) {
+            console.log('Header or sub-header already exists before this line, skipping');
+            return;
+        }
+        
+        // Create and insert the sub-header element
+        const subHeaderElement = document.createElement('div');
+        subHeaderElement.className = 'topic-subheader';
+        subHeaderElement.dataset.subHeaderId = subHeader.id;
+        subHeaderElement.dataset.parentHeaderId = subHeader.parentId;
+        subHeaderElement.innerHTML = `
+            <div class="topic-subheader-content">
+                <div class="topic-subtitle">${subHeader.title}</div>
+                <div class="topic-timestamp">${new Date(subHeader.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        // Insert the sub-header before the target line
+        this.transcriptContent.insertBefore(subHeaderElement, targetLineElement);
+        this.addHeaderStyles();
+        
+        console.log(`✅ Inserted sub-header "${subHeader.title}" before line at word index ${segmentStartWordIndex}`);
+    }
+
+    addSubHeaderAtEnd(subHeader, mainHeader) {
+        // Simple approach: add sub-header at the end of transcript
+        const subHeaderElement = document.createElement('div');
+        subHeaderElement.className = 'topic-subheader';
+        subHeaderElement.dataset.subHeaderId = subHeader.id;
+        subHeaderElement.dataset.parentHeaderId = subHeader.parentId;
+        subHeaderElement.innerHTML = `
+            <div class="topic-subheader-content">
+                <div class="topic-subtitle">${subHeader.title}</div>
+                <div class="topic-timestamp">${new Date(subHeader.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        this.transcriptContent.appendChild(subHeaderElement);
+        this.addHeaderStyles();
+        
+        console.log(`✅ Added sub-header "${subHeader.title}" at end of transcript`);
+    }
+
     // Settings handling
     showSettings() {
         // Load current settings
@@ -3415,39 +3690,230 @@ class RendererApp {
             });
         });
         
-        // Reconstruct segments as separate transcript sections
-        metadata.segments.forEach((segment, segmentIndex) => {
-            const segmentWords = allWords.slice(segment.startWordIndex, segment.endWordIndex + 1);
+        // Reconstruct segments with headers
+        this.reconstructSegmentsWithHeaders(metadata, allWords, wordToLineMap);
+        
+        console.log(`Reconstructed ${metadata.segments.length} segments with ${metadata.headers ? metadata.headers.length : 0} headers`);
+    }
+
+    reconstructSegmentsWithHeaders(metadata, allWords, wordToLineMap) {
+        const headers = metadata.headers || [];
+        const segments = metadata.segments || [];
+        
+        // Track which segments we've already processed
+        const processedSegments = new Set();
+        
+        // Process headers in order
+        headers.forEach(header => {
+            // Add header visual element
+            this.addHeaderElement(header);
             
-            if (segmentWords.length > 0) {
-                // Get the original line info for the first word in this segment
-                const firstWordInfo = wordToLineMap[segment.startWordIndex];
-                const originalLine = firstWordInfo.originalLine;
+            // Group segments by sub-headers and main header
+            const mainHeaderSegments = [];
+            const subHeaderGroups = new Map();
+            
+            // Organize segments by sub-headers
+            header.segments.forEach(segmentId => {
+                const segment = segments.find(s => s.id === segmentId);
+                if (!segment || processedSegments.has(segment.id)) return;
                 
-                // Create a segment line with the segment's words
-                // Use metadata timestamp in 24-hour format
-                const metadataTimestamp = new Date(segment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+                // Check if this segment belongs to a sub-header
+                let belongsToSubHeader = false;
+                if (header.subHeaders) {
+                    for (const subHeader of header.subHeaders) {
+                        if (subHeader.segments.includes(segmentId)) {
+                            if (!subHeaderGroups.has(subHeader.id)) {
+                                subHeaderGroups.set(subHeader.id, {
+                                    subHeader: subHeader,
+                                    segments: []
+                                });
+                            }
+                            subHeaderGroups.get(subHeader.id).segments.push(segment);
+                            belongsToSubHeader = true;
+                            break;
+                        }
+                    }
+                }
                 
-                const segmentLine = {
-                    timestamp: metadataTimestamp,
-                    speaker: originalLine.speaker || (segment.source === 'live-transcription' ? 'Live Audio' : 'Speaker'),
-                    content: segmentWords.join(' '),
-                    wordIndex: segment.startWordIndex,
-                    wordCount: segmentWords.length,
-                    segmentSource: segment.source,
-                    segmentId: segment.id
-                };
-                
-                this.transcriptLines.push(segmentLine);
-                
-                // Add the line - all segments get identical treatment and appearance
-                this.addTranscriptLine(segmentLine, false); // No animation for reconstruction
-                
-                // No special styling - all segments should look identical to default appearance
+                // If not in a sub-header, it belongs directly to the main header
+                if (!belongsToSubHeader) {
+                    mainHeaderSegments.push(segment);
+                }
+            });
+            
+            // Add main header segments first (these come before any sub-headers)
+            mainHeaderSegments.forEach(segment => {
+                this.addSegmentLine(segment, allWords, wordToLineMap);
+                processedSegments.add(segment.id);
+            });
+            
+            // Add sub-headers and their segments
+            if (header.subHeaders) {
+                header.subHeaders.forEach(subHeader => {
+                    const subHeaderGroup = subHeaderGroups.get(subHeader.id);
+                    if (subHeaderGroup && subHeaderGroup.segments.length > 0) {
+                        // Add sub-header visual element
+                        this.addSubHeaderElement(subHeader);
+                        
+                        // Add all segments belonging to this sub-header
+                        subHeaderGroup.segments.forEach(segment => {
+                            this.addSegmentLine(segment, allWords, wordToLineMap);
+                            processedSegments.add(segment.id);
+                        });
+                    }
+                });
             }
         });
         
-        console.log(`Reconstructed ${metadata.segments.length} segments`);
+        // Add any segments that don't belong to any header
+        segments.forEach(segment => {
+            if (!processedSegments.has(segment.id)) {
+                this.addSegmentLine(segment, allWords, wordToLineMap);
+            }
+        });
+    }
+
+    addHeaderElement(header) {
+        const headerElement = document.createElement('div');
+        headerElement.className = 'topic-header';
+        headerElement.dataset.headerId = header.id;
+        headerElement.innerHTML = `
+            <div class="topic-header-content">
+                <div class="topic-title">${header.title}</div>
+                <div class="topic-timestamp">${new Date(header.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        this.transcriptContent.appendChild(headerElement);
+        
+        // Add CSS for headers if not already added
+        this.addHeaderStyles();
+    }
+
+    addSubHeaderElement(subHeader) {
+        const subHeaderElement = document.createElement('div');
+        subHeaderElement.className = 'topic-subheader';
+        subHeaderElement.dataset.subHeaderId = subHeader.id;
+        subHeaderElement.dataset.parentHeaderId = subHeader.parentId;
+        subHeaderElement.innerHTML = `
+            <div class="topic-subheader-content">
+                <div class="topic-subtitle">${subHeader.title}</div>
+                <div class="topic-timestamp">${new Date(subHeader.timestamp).toLocaleTimeString('en-GB', { hour12: false })}</div>
+            </div>
+        `;
+        
+        this.transcriptContent.appendChild(subHeaderElement);
+        
+        // Add CSS for headers if not already added (includes sub-header styles)
+        this.addHeaderStyles();
+    }
+
+    addSegmentLine(segment, allWords, wordToLineMap) {
+        const segmentWords = allWords.slice(segment.startWordIndex, segment.endWordIndex + 1);
+        
+        if (segmentWords.length > 0) {
+            // Get the original line info for the first word in this segment
+            const firstWordInfo = wordToLineMap[segment.startWordIndex];
+            const originalLine = firstWordInfo.originalLine;
+            
+            // Create a segment line with the segment's words
+            const metadataTimestamp = new Date(segment.timestamp).toLocaleTimeString('en-GB', { hour12: false });
+            
+            const segmentLine = {
+                timestamp: metadataTimestamp,
+                speaker: originalLine.speaker || (segment.source === 'live-transcription' ? 'Live Audio' : 'Speaker'),
+                content: segmentWords.join(' '),
+                wordIndex: segment.startWordIndex,
+                wordCount: segmentWords.length,
+                segmentSource: segment.source,
+                segmentId: segment.id
+            };
+            
+            this.transcriptLines.push(segmentLine);
+            this.addTranscriptLine(segmentLine, false); // No animation for reconstruction
+        }
+    }
+
+    addHeaderStyles() {
+        // Check if styles are already added
+        if (document.querySelector('#topic-header-styles')) {
+            return;
+        }
+        
+        const style = document.createElement('style');
+        style.id = 'topic-header-styles';
+        style.textContent = `
+            .topic-header {
+                margin: 20px 0 10px 0;
+                padding: 12px 16px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border-radius: 8px;
+                border-left: 4px solid #4c63d2;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }
+            
+            .topic-header-content {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .topic-title {
+                font-weight: 600;
+                font-size: 14px;
+                color: white;
+                text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+            }
+            
+            .topic-timestamp {
+                font-size: 11px;
+                color: rgba(255, 255, 255, 0.8);
+                font-family: 'Consolas', 'Monaco', monospace;
+            }
+            
+            .topic-header + .transcript-line {
+                margin-top: 8px;
+            }
+            
+            .topic-subheader {
+                margin: 15px 0 8px 20px;
+                padding: 8px 12px;
+                background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+                border-radius: 6px;
+                border-left: 3px solid #4caf50;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+                position: relative;
+            }
+            
+            .topic-subheader::before {
+                content: '';
+                position: absolute;
+                left: -20px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 12px;
+                height: 1px;
+                background: #4caf50;
+            }
+            
+            .topic-subheader-content {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .topic-subtitle {
+                font-weight: 500;
+                font-size: 13px;
+                color: white;
+                text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+            }
+            
+            .topic-subheader + .transcript-line {
+                margin-top: 6px;
+            }
+        `;
+        document.head.appendChild(style);
     }
 
     formatText(command, value = null) {

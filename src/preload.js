@@ -71,6 +71,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('summary-update', (event, summary) => callback(summary));
     },
     
+    onTopicUpdate: (callback) => {
+        ipcRenderer.on('topic-update', (event, topicData) => callback(topicData));
+    },
+    
     onCostUpdate: (callback) => {
         ipcRenderer.on('cost-update', (event, cost) => callback(cost));
     },

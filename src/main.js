@@ -1156,6 +1156,10 @@ class ElectronTranscriptApp {
         this.sendToRenderer('summary-update', summary);
     }
 
+    sendTopicUpdate(topicData) {
+        this.sendToRenderer('topic-update', topicData);
+    }
+
     sendCostUpdate(costData) {
         this.sendToRenderer('cost-update', costData);
     }

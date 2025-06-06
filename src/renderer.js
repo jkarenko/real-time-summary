@@ -111,6 +111,7 @@ class RendererApp {
         this.settingsBtn = document.getElementById('settings-btn');
         this.recordBtn = document.getElementById('record-btn');
         this.generateNoteBtn = document.getElementById('generate-note');
+        this.generateHeaderBtn = document.getElementById('generate-header-btn');
         this.noteTextOnlyBtn = document.getElementById('note-text-only');
         this.noteScreenshotsOnlyBtn = document.getElementById('note-screenshots-only');
         this.sessionFilterBtn = document.getElementById('session-filter');
@@ -169,6 +170,9 @@ class RendererApp {
         this.formatH2Btn.addEventListener('click', () => this.formatText('formatBlock', 'h2'));
         this.formatUlBtn.addEventListener('click', () => this.formatText('insertUnorderedList'));
         this.formatOlBtn.addEventListener('click', () => this.formatText('insertOrderedList'));
+
+        // Generate header button
+        this.generateHeaderBtn.addEventListener('click', () => this.handleGenerateHeader());
 
         // Filter buttons
         this.sessionFilterBtn.addEventListener('click', () => this.setScreenshotFilter('session'));
@@ -2952,6 +2956,71 @@ class RendererApp {
         
         if (window.electronAPI) {
             window.electronAPI.createSummary(sessionContext);
+        }
+    }
+
+    // Generate header handling
+    handleGenerateHeader() {
+        this.generateHeaderBtn.textContent = 'Generating...';
+        this.generateHeaderBtn.disabled = true;
+        
+        // Get current context selection using the same logic as updateSelectionStatus
+        const hasSelection = this.selectedRange.start !== null && this.selectedRange.end !== null;
+        
+        let startWord = null;
+        let endWord = null;
+        let contextType = null;
+        
+        if (hasSelection) {
+            // Priority 1: Highlighted selection
+            startWord = Math.min(this.selectedRange.start, this.selectedRange.end);
+            endWord = Math.max(this.selectedRange.start, this.selectedRange.end);
+            contextType = 'selection';
+        } else if (this.contextMarkers.in !== null || this.contextMarkers.out !== null) {
+            // Priority 2: IN/OUT markers
+            if (this.contextMarkers.in !== null && this.contextMarkers.out !== null) {
+                startWord = Math.min(this.contextMarkers.in, this.contextMarkers.out);
+                endWord = Math.max(this.contextMarkers.in, this.contextMarkers.out);
+                contextType = 'in-out-markers';
+            } else if (this.contextMarkers.in !== null) {
+                startWord = this.contextMarkers.in;
+                endWord = this.wordCount - 1;
+                contextType = 'in-marker';
+            } else if (this.contextMarkers.out !== null) {
+                startWord = 0;
+                endWord = this.contextMarkers.out;
+                contextType = 'out-marker';
+            }
+        } else if (this.settings.wordLimit > 0 && this.wordCount > this.settings.wordLimit) {
+            // Priority 3: Word limit (last N words)
+            startWord = this.wordCount - this.settings.wordLimit;
+            endWord = this.wordCount - 1;
+            contextType = 'word-limit';
+        }
+        
+        const contextData = {
+            sessionContext: this.sessionTopicInput.value.trim(),
+            startWordIndex: startWord,
+            endWordIndex: endWord,
+            contextType: contextType,
+            selectedScreenshots: Array.from(this.selectedScreenshots)
+        };
+        
+        if (window.electronAPI) {
+            window.electronAPI.generateHeader(contextData)
+                .then(header => {
+                    this.noteHeaderInput.value = header;
+                })
+                .catch(error => {
+                    console.error('Error generating header:', error);
+                })
+                .finally(() => {
+                    this.generateHeaderBtn.textContent = 'Generate Header';
+                    this.generateHeaderBtn.disabled = false;
+                });
+        } else {
+            this.generateHeaderBtn.textContent = 'Generate Header';
+            this.generateHeaderBtn.disabled = false;
         }
     }
 

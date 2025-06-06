@@ -427,8 +427,14 @@ body {
     color: #555;
 }
 
+.note-header-input {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
 .note-input-section input {
-    width: 100%;
+    flex: 1;
     padding: 8px 12px;
     border: 1px solid #ccc;
     border-radius: 4px;

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Summarizer operations
     createSummary: (sessionContext) => ipcRenderer.invoke('create-summary', sessionContext),
     generateNote: (noteData) => ipcRenderer.invoke('generate-note', noteData),
+    generateHeader: (contextData) => ipcRenderer.invoke('generate-header', contextData),
     
     // Screenshot operations
     updateScreenshotSelection: (selectedPaths) => ipcRenderer.invoke('update-screenshot-selection', selectedPaths),

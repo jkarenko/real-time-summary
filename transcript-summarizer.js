@@ -537,6 +537,113 @@ Brief note content:`;
         }
     }
 
+    async generateHeader(startWordIndex = null, endWordIndex = null, contextType = null) {
+        try {
+            // Get the active transcript (compressed if available)
+            const fullTranscript = this.getActiveTranscript();
+            
+            if (!fullTranscript.trim()) {
+                console.log('⚠️  No transcript content available for header generation');
+                return 'Meeting Topic';
+            }
+
+            // Use selected word range if provided, otherwise use full transcript or apply word limit
+            let contextTranscript = fullTranscript;
+            
+            if (startWordIndex !== null && endWordIndex !== null) {
+                contextTranscript = this.extractWordRange(fullTranscript, startWordIndex, endWordIndex);
+                console.log(`Generating header from selected word range ${startWordIndex}-${endWordIndex}`);
+            } else if (this.contextWordLimit > 0) {
+                contextTranscript = this.getLimitedTranscript(fullTranscript);
+                console.log(`Generating header from word-limited transcript (${this.contextWordLimit} words)`);
+            } else {
+                console.log('Generating header from full transcript');
+            }
+
+            const messages = [];
+            const content = [];
+
+            // Create prompt for header generation
+            let promptText = `You are an AI assistant helping generate concise note headers for a SOFTWARE SOLUTION ARCHITECT. You have access to the meeting transcript and need to generate a brief, descriptive header that captures the main topic or theme of the content.
+
+MEETING TRANSCRIPT:
+${contextTranscript}`;
+
+            // Add context about the selection type if available
+            if (contextType) {
+                promptText += `
+
+CONTEXT TYPE: ${contextType}`;
+            }
+
+            promptText += `
+
+Generate a concise header (3-8 words) that describes the main topic, decision, or discussion point from this content. The header should be:
+- Clear and descriptive
+- Professional and specific
+- Suitable for a meeting note title
+- Without quotes or special formatting
+
+Examples of good headers:
+- "Database Migration Strategy"
+- "API Rate Limiting Implementation"
+- "Security Review Findings"
+- "Performance Optimization Plan"
+
+Provide ONLY the header text, nothing else.`;
+
+            content.push({
+                type: 'text',
+                text: promptText
+            });
+
+            // Add selected screenshots if any
+            if (this.selectedScreenshots && this.selectedScreenshots.length > 0) {
+                for (const screenshotPath of this.selectedScreenshots) {
+                    try {
+                        const imageData = fs.readFileSync(screenshotPath);
+                        const base64Image = imageData.toString('base64');
+                        const fileExtension = path.extname(screenshotPath).toLowerCase().substring(1);
+                        const mimeType = fileExtension === 'jpg' ? 'jpeg' : fileExtension;
+                        
+                        content.push({
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: `image/${mimeType}`,
+                                data: base64Image
+                            }
+                        });
+                    } catch (error) {
+                        console.log(`⚠️  Could not read screenshot ${screenshotPath}:`, error.message);
+                    }
+                }
+            }
+
+            messages.push({ role: 'user', content });
+
+            const message = await this.anthropic.messages.create({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 100,
+                messages
+            });
+
+            const inputTokens = message.usage.input_tokens;
+            const outputTokens = message.usage.output_tokens;
+            const requestCost = this.calculateCost(inputTokens, outputTokens);
+
+            const headerContent = message.content[0].text.trim();
+            this.displayCostReport(requestCost, inputTokens, outputTokens);
+
+            console.log(`Generated header: "${headerContent}"`);
+            return headerContent;
+
+        } catch (error) {
+            console.error('Error generating header:', error.message);
+            return 'Meeting Topic';
+        }
+    }
+
     async createSummaryFromCurrent() {
         try {
             // Get the active transcript (compressed if available)

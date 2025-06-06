@@ -818,6 +818,22 @@ class ElectronTranscriptApp {
             }
         });
 
+        ipcMain.handle('generate-header', async (_, contextData) => {
+            if (this.summarizer) {
+                const { sessionContext, startWordIndex, endWordIndex, contextType, selectedScreenshots } = contextData;
+                
+                // Update summarizer's selected screenshots
+                this.summarizer.selectedScreenshots = selectedScreenshots;
+                
+                // Update session context if provided
+                if (sessionContext) {
+                    this.summarizer.sessionContext = sessionContext;
+                }
+
+                return await this.summarizer.generateHeader(startWordIndex, endWordIndex, contextType);
+            }
+        });
+
         ipcMain.handle('update-screenshot-selection', (_, selectedPaths) => {
             if (this.summarizer) {
                 this.summarizer.selectedScreenshots = selectedPaths;

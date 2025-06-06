@@ -721,9 +721,19 @@ Be conservative - if technical details weren't explicitly discussed, don't inclu
                 console.log('='.repeat(50));
                 console.log(`💾 Summary saved to: ${this.summaryFilePath}`);
             }
+            
+            // Notify electron app if available (for button state reset)
+            if (this.electronApp) {
+                this.electronApp.sendSummaryUpdate(this.currentSummary);
+            }
 
         } catch (error) {
             console.error('Error creating summary from current transcript:', error.message);
+            
+            // Notify electron app of error completion if available
+            if (this.electronApp) {
+                this.electronApp.sendSummaryUpdate(null);
+            }
         }
     }
 
